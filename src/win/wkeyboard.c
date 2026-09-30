@@ -323,6 +323,10 @@ static void update_toggle_modifiers(void)
 
 
 
+/* ICBM: when false, auto-repeated ALLEGRO_EVENT_KEY_CHAR events are not
+ * generated (the game does its own key repeat). */
+bool SEND_REPEAT_EVENTS = true;
+
 /* _al_win_kbd_handle_key_press:
  *  Does stuff when a key is pressed.
  */
@@ -391,7 +395,7 @@ void _al_win_kbd_handle_key_press(int scode, int vcode, bool extended,
          update_toggle_modifiers();
          event.keyboard.modifiers = modifiers;
          event.keyboard.repeat = actual_repeat;
-         for (i = 0; i < event_count; i++) {
+         for (i = 0; i < event_count && (SEND_REPEAT_EVENTS || !actual_repeat); i++) { /* ICBM */
             event.keyboard.unichar = buf[i];
             _al_event_source_emit_event(&the_keyboard.es, &event);
          }
