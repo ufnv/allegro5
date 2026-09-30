@@ -66,6 +66,9 @@ static const char* _al_d3d_module_name = "d3d9.dll";
 
 ALLEGRO_DEBUG_CHANNEL("d3d")
 
+/* ICBM: device-reset hooks and display-thread message pump. */
+#include "d3d_disp_icbm.inc"
+
 static ALLEGRO_DISPLAY_INTERFACE *vt = 0;
 
 static HMODULE _al_d3d_module = 0;
@@ -1524,14 +1527,8 @@ static void *d3d_display_thread_proc(void *arg)
    SetEvent(params->AckEvent);
 
    while (!win_display->end_thread) {
-      al_rest(0.001);
-
-      if (PeekMessage(&msg, NULL, 0, 0, FALSE)) {
-         if (GetMessage(&msg, NULL, 0, 0) != 0)
-            DispatchMessage(&msg);
-         else
-            break;                  /* WM_QUIT received or error (GetMessage returned -1)  */
-      }
+      if (!icbm_d3d_pump_messages(&msg)) /* ICBM: was al_rest(0.001) + one message */
+         break;                  /* WM_QUIT received */
 
       if (!d3d_display->device) {
          continue;
@@ -1566,6 +1563,7 @@ static void *d3d_display_thread_proc(void *arg)
             }
          }
          else if (hr == D3DERR_DEVICENOTRESET) {
+            ReleaseAllVideoMemoryPossible(); /* ICBM */
             if (_al_d3d_reset_device(d3d_display)) {
                d3d_display->device_lost = false;
                d3d_reset_state(d3d_display);
@@ -1584,6 +1582,7 @@ static void *d3d_display_thread_proc(void *arg)
                   (*d3d_restore_callback)(al_display);
                }
             }
+            DisplayResetFinished(); /* ICBM */
          }
       }
       if (d3d_display->do_reset) {
