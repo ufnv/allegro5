@@ -81,6 +81,8 @@ typedef struct ALLEGRO_DISPLAY_D3D
    LPD3DXEFFECT effect;
 #endif
    LPDIRECT3DVERTEXSHADER9 primitives_shader;
+
+   void *icbm_hdr; /* ICBM: HDR output state (src/win/d3d_hdr_icbm.inc) */
 } ALLEGRO_DISPLAY_D3D;
 
 
@@ -89,6 +91,9 @@ AL_FUNC(void, _al_set_d3d_sampler_state, (IDirect3DDevice9* device,
    int sampler, ALLEGRO_BITMAP* bitmap, bool prim_default));
 
 void _al_d3d_destroy_bitmap(ALLEGRO_BITMAP *bitmap);
+/* ICBM: Direct3D 9Ex has no managed pool (src/win/d3d_hdr_icbm.inc). */
+D3DPOOL _al_d3d_icbm_managed_pool(void);
+DWORD _al_d3d_icbm_managed_texture_usage(void);
 void _al_d3d_update_render_state(ALLEGRO_DISPLAY *display);
 
 bool _al_hlsl_set_projview_matrix(LPD3DXEFFECT effect,

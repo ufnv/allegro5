@@ -100,6 +100,9 @@ static bool already_fullscreen = false; /* real fullscreen */
 static ALLEGRO_MUTEX *present_mutex;
 ALLEGRO_MUTEX *_al_d3d_lost_device_mutex;
 
+/* ICBM: HDR output. */
+#include "d3d_hdr_icbm.inc"
+
 /*
  * In the context of this file, legacy cards pretty much refer to older Intel cards.
  * They are distinguished by three misfeatures:
@@ -620,6 +623,7 @@ static bool d3d_create_fullscreen_device(ALLEGRO_DISPLAY_D3D *d,
    }
 
    d->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &d->render_target);
+   icbm_hdr_backbuffer_acquired(d); /* ICBM */
 
    ALLEGRO_INFO("Fullscreen Direct3D device created.\n");
 
@@ -895,6 +899,7 @@ static bool d3d_create_device(ALLEGRO_DISPLAY_D3D *d,
       ALLEGRO_ERROR("d3d_create_device: GetBackBuffer failed.\n");
       return 0;
    }
+   icbm_hdr_backbuffer_acquired(d); /* ICBM */
 
    if (d->device->BeginScene() != D3D_OK) {
       ALLEGRO_ERROR("BeginScene failed in create_device\n");
@@ -1012,6 +1017,7 @@ void _al_d3d_prepare_for_reset(ALLEGRO_DISPLAY_D3D *disp)
    d3d_call_callbacks(&al_display->display_invalidated_callbacks, al_display);
 
    _al_d3d_release_default_pool_textures((ALLEGRO_DISPLAY *)disp);
+   icbm_hdr_backbuffer_release(disp); /* ICBM */
    while (disp->render_target && disp->render_target->Release() != 0) {
       ALLEGRO_WARN("_al_d3d_prepare_for_reset: (bb) ref count not 0\n");
    }
@@ -1173,6 +1179,7 @@ static bool _al_d3d_reset_device(ALLEGRO_DISPLAY_D3D *d3d_display)
     }
 
    d3d_display->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &d3d_display->render_target);
+   icbm_hdr_backbuffer_acquired(d3d_display); /* ICBM */
 
    _al_d3d_refresh_texture_memory(al_display);
 
@@ -1595,6 +1602,7 @@ static void *d3d_display_thread_proc(void *arg)
       }
    }
 
+   icbm_hdr_destroy(d3d_display); /* ICBM */
    d3d_destroy_device(d3d_display);
 
    if (d3d_display->faux_fullscreen) {
@@ -1820,7 +1828,7 @@ static ALLEGRO_DISPLAY_D3D *d3d_create_display_internals(
    if (!check_use_fixed_pipeline(d3d_display->device)) {
       HRESULT res;
 
-      res = d3d_display->device->CreateIndexBuffer(2 * sizeof(int), 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &d3d_display->loop_index_buffer, 0);
+      res = d3d_display->device->CreateIndexBuffer(2 * sizeof(int), 0, D3DFMT_INDEX32, _al_d3d_icbm_managed_pool(), &d3d_display->loop_index_buffer, 0); /* ICBM: was D3DPOOL_MANAGED */
       if (res != D3D_OK) {
          ALLEGRO_WARN("CreateIndexBuffer failed: %ld.\n", res);
          if (free_on_error) {
@@ -1927,6 +1935,7 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
    ALLEGRO_DISPLAY_WIN *win_display;
    int *s;
 
+   icbm_hdr_prepare_d3d(); /* ICBM */
    al_lock_mutex(present_mutex);
    display = d3d_create_display_locked(w, h);
    win_display = (ALLEGRO_DISPLAY_WIN *)display;
@@ -1935,6 +1944,7 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
    if (!display)
       return NULL;
 
+   icbm_hdr_display_created((ALLEGRO_DISPLAY_D3D *)display); /* ICBM */
    ASSERT(display->vt);
 
    s = display->extra_settings.settings;
@@ -2154,7 +2164,8 @@ static void d3d_flip_display(ALLEGRO_DISPLAY *al_display)
 
    d3d_display->device->EndScene();
 
-   hr = d3d_display->device->Present(NULL, NULL, win_display->window, NULL);
+   hr = icbm_hdr_flip(d3d_display) ? D3D_OK : /* ICBM: HDR presents through D3D11 */
+      d3d_display->device->Present(NULL, NULL, win_display->window, NULL);
 
    d3d_display->device->BeginScene();
 
@@ -3695,7 +3706,7 @@ static bool d3d_create_vertex_buffer(ALLEGRO_VERTEX_BUFFER* buf, const void* ini
    }
 
    res = device->CreateVertexBuffer(stride * num_vertices, !(flags & ALLEGRO_PRIM_BUFFER_READWRITE) ? D3DUSAGE_WRITEONLY : 0,
-                                    fvf, D3DPOOL_MANAGED, &d3d_vbuff, 0);
+                                    fvf, _al_d3d_icbm_managed_pool(), &d3d_vbuff, 0); /* ICBM: was D3DPOOL_MANAGED */
    if (res != D3D_OK) {
       ALLEGRO_WARN("CreateVertexBuffer failed: %ld.\n", res);
       return false;
@@ -3728,7 +3739,7 @@ static bool d3d_create_index_buffer(ALLEGRO_INDEX_BUFFER* buf, const void* initi
    device = al_get_d3d_device(al_get_current_display());
 
    res = device->CreateIndexBuffer(num_indices * buf->index_size, !(flags & ALLEGRO_PRIM_BUFFER_READWRITE) ? D3DUSAGE_WRITEONLY : 0,
-                                   buf->index_size == 4 ? D3DFMT_INDEX32 : D3DFMT_INDEX16, D3DPOOL_MANAGED, &d3d_ibuff, 0);
+                                   buf->index_size == 4 ? D3DFMT_INDEX32 : D3DFMT_INDEX16, _al_d3d_icbm_managed_pool(), &d3d_ibuff, 0); /* ICBM: was D3DPOOL_MANAGED */
    if (res != D3D_OK) {
       ALLEGRO_WARN("CreateIndexBuffer failed: %ld.\n", res);
       return false;

@@ -374,13 +374,13 @@ static bool d3d_create_textures(ALLEGRO_DISPLAY_D3D *disp, int w, int h,
 
    if (_al_d3d_render_to_texture_supported()) {
       if (video_texture) {
-         int usage = compressed ? 0 : D3DUSAGE_RENDERTARGET;
+         int usage = compressed ? (int)_al_d3d_icbm_managed_texture_usage() : D3DUSAGE_RENDERTARGET; /* ICBM */
          /* XXX: Compressed video bitmaps are managed, so in principle
           * there is no need to manually sync them for device loss.
           * It is still necessary to do so for resizing purposes,
           * however... not sure there's any real savings to be had here.
           */
-         D3DPOOL pool = compressed ? D3DPOOL_MANAGED : D3DPOOL_DEFAULT;
+         D3DPOOL pool = compressed ? _al_d3d_icbm_managed_pool() : D3DPOOL_DEFAULT; /* ICBM: was D3DPOOL_MANAGED */
          err = disp->device->CreateTexture(w, h, levels,
             usage | autogenmipmap,
             (D3DFORMAT)_al_pixel_format_to_d3d(video_format), pool,
@@ -410,7 +410,7 @@ static bool d3d_create_textures(ALLEGRO_DISPLAY_D3D *disp, int w, int h,
    else {
       if (video_texture) {
          err = disp->device->CreateTexture(w, h, 1,
-            0, (D3DFORMAT)_al_pixel_format_to_d3d(video_format), D3DPOOL_MANAGED,
+            _al_d3d_icbm_managed_texture_usage(), (D3DFORMAT)_al_pixel_format_to_d3d(video_format), _al_d3d_icbm_managed_pool(), /* ICBM */
             video_texture, NULL);
          if (err != D3D_OK) {
             ALLEGRO_ERROR("d3d_create_textures: Unable to create video texture (no render-to-texture).\n");
