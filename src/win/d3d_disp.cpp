@@ -1989,7 +1989,9 @@ void _al_d3d_set_blender(ALLEGRO_DISPLAY_D3D *d3d_display)
    DWORD allegro_to_d3d_blendop[ALLEGRO_NUM_BLEND_OPERATIONS] = {
       D3DBLENDOP_ADD,
       D3DBLENDOP_SUBTRACT,
-      D3DBLENDOP_REVSUBTRACT
+      D3DBLENDOP_REVSUBTRACT,
+      D3DBLENDOP_MIN, /* ICBM */
+      D3DBLENDOP_MAX  /* ICBM */
    };
 
    blender_changed = false;

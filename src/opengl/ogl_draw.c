@@ -764,8 +764,13 @@ bool _al_opengl_set_blender(ALLEGRO_DISPLAY *ogl_disp)
       GL_ONE, GL_ONE
 #endif
    };
-   const int blend_equations[3] = {
-      GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT
+   const int blend_equations[ALLEGRO_NUM_BLEND_OPERATIONS] = {
+      GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT,
+#if defined(GL_MIN) && defined(GL_MAX)
+      GL_MIN, GL_MAX /* ICBM */
+#else
+      GL_FUNC_ADD, GL_FUNC_ADD /* ICBM: no min/max on this GL (ES 2 without EXT_blend_minmax) */
+#endif
    };
 
    (void)ogl_disp;

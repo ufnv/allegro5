@@ -30,6 +30,8 @@ enum ALLEGRO_BLEND_OPERATIONS {
    ALLEGRO_ADD                = 0,
    ALLEGRO_SRC_MINUS_DEST     = 1,
    ALLEGRO_DEST_MINUS_SRC     = 2,
+   ALLEGRO_MIN                = 3, /* ICBM */
+   ALLEGRO_MAX                = 4, /* ICBM */
    ALLEGRO_NUM_BLEND_OPERATIONS
 };
 

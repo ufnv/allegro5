@@ -17,7 +17,8 @@
 
 #define _AL_DEST_IS_ZERO \
    (dst_mode == ALLEGRO_ZERO &&  dst_alpha == ALLEGRO_ZERO && \
-   op != ALLEGRO_DEST_MINUS_SRC && op_alpha != ALLEGRO_DEST_MINUS_SRC)
+   op != ALLEGRO_DEST_MINUS_SRC && op_alpha != ALLEGRO_DEST_MINUS_SRC && \
+   op < ALLEGRO_MIN && op_alpha < ALLEGRO_MIN) /* ICBM: MIN/MAX read dest */
 
 #define _AL_SRC_NOT_MODIFIED \
    (src_mode == ALLEGRO_ONE && src_alpha == ALLEGRO_ONE)
@@ -26,6 +27,8 @@
    (_AL_SRC_NOT_MODIFIED && \
    tint.r == 1.0f && tint.g == 1.0f && tint.b == 1.0f && tint.a == 1.0f)
 
+
+#include "allegro5/internal/aintern_blend_icbm.h" /* ICBM */
 
 #ifndef _AL_NO_BLEND_INLINE_FUNC
 
@@ -127,6 +130,7 @@ void _al_blend_alpha_inline(
    #define BLEND(c, src, dst) \
       result->c = OP(result->c * src, dcol->c * dst);
    switch (op) {
+      _AL_ICBM_BLEND_MINMAX_RGB_CASES /* ICBM */
       case ALLEGRO_ADD:
          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
          BLEND(r, src, dst)
@@ -151,6 +155,7 @@ void _al_blend_alpha_inline(
    }
 
    switch (aop) {
+      _AL_ICBM_BLEND_MINMAX_ALPHA_CASES /* ICBM */
       case ALLEGRO_ADD:
          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
          BLEND(a, asrc, adst)
@@ -193,6 +198,7 @@ void _al_blend_inline(
    #define BLEND(c, src, dst) \
       result->c = OP(result->c * src.c, dcol->c * dst.c);
    switch (op) {
+      _AL_ICBM_BLEND_MINMAX_RGB_CASES /* ICBM */
       case ALLEGRO_ADD:
          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
          BLEND(r, src, dst)
@@ -220,6 +226,7 @@ void _al_blend_inline(
    #define BLEND(c, src, dst) \
       result->c = OP(result->c * src, dcol->c * dst);
    switch (aop) {
+      _AL_ICBM_BLEND_MINMAX_ALPHA_CASES /* ICBM */
       case ALLEGRO_ADD:
          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
          BLEND(a, asrc, adst)
