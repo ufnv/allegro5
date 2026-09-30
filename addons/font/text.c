@@ -107,6 +107,9 @@ void al_draw_text(const ALLEGRO_FONT *font,
 {
    ALLEGRO_USTR_INFO info;
    ASSERT(text);
+   /* ICBM: tolerate a NULL font (fonts are released on D3D device reset). */
+   if (!font)
+      return;
    al_draw_ustr(font, color, x, y, flags, al_ref_cstr(&info, text));
 }
 
@@ -131,6 +134,8 @@ void al_draw_justified_ustr(const ALLEGRO_FONT *font,
    ALLEGRO_TRANSFORM inv;
 
    ASSERT(font);
+   if (!font)
+      return;
 
    /* count words and measure min length (without spaces) */
    num_words = 0;
@@ -273,6 +278,8 @@ int al_get_ustr_width(const ALLEGRO_FONT *f, ALLEGRO_USTR const *ustr)
    ASSERT(f);
    ASSERT(ustr);
 
+   if (!f)
+      return 1;
    return f->vtable->text_length(f, ustr);
 }
 
@@ -289,6 +296,8 @@ int al_get_text_width(const ALLEGRO_FONT *f, const char *str)
 
    ustr = al_ref_cstr(&str_info, str);
 
+   if (!f)
+      return 1;
    return f->vtable->text_length(f, ustr);
 }
 
@@ -309,6 +318,8 @@ int al_get_font_line_height(const ALLEGRO_FONT *f)
 int al_get_font_ascent(const ALLEGRO_FONT *f)
 {
    ASSERT(f);
+   if (!f)
+      return 0;
    return f->vtable->font_ascent(f);
 }
 
@@ -319,6 +330,8 @@ int al_get_font_ascent(const ALLEGRO_FONT *f)
 int al_get_font_descent(const ALLEGRO_FONT *f)
 {
    ASSERT(f);
+   if (!f)
+      return 0;
    return f->vtable->font_descent(f);
 }
 
@@ -332,6 +345,10 @@ void al_get_ustr_dimensions(const ALLEGRO_FONT *f,
 {
    ASSERT(f);
    ASSERT(ustr);
+   if (!f) {
+      *bbx = *bby = *bbw = *bbh = 0;
+      return;
+   }
    f->vtable->get_text_dimensions(f, ustr, bbx, bby,
       bbw, bbh);
 }
@@ -348,6 +365,10 @@ void al_get_text_dimensions(const ALLEGRO_FONT *f,
    ASSERT(f);
    ASSERT(text);
 
+   if (!f) {
+      *bbx = *bby = *bbw = *bbh = 0;
+      return;
+   }
    f->vtable->get_text_dimensions(f, al_ref_cstr(&info, text), bbx, bby,
       bbw, bbh);
 }
