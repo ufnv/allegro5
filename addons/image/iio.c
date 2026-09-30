@@ -79,6 +79,7 @@ bool al_init_image_addon(void)
    success |= al_register_bitmap_loader(".png", _al_load_png);
    success |= al_register_bitmap_saver(".png", _al_save_png);
    success |= al_register_bitmap_loader_f(".png", _al_load_png_f);
+   success |= al_register_bitmap_loader_existing_f(".png", _al_load_png_existing_f); /* ICBM */
    success |= al_register_bitmap_saver_f(".png", _al_save_png_f);
 #endif
 

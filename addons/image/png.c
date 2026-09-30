@@ -86,11 +86,15 @@ static int check_if_png(ALLEGRO_FILE *fp)
 
 
 
+/* ICBM: helpers for loading into existing bitmaps / exporting alpha. */
+#include "png_icbm.inc"
+
+
 /* really_load_png:
  *  Worker routine, used by load_png and load_memory_png.
  */
 static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
-   int flags)
+   int flags, ALLEGRO_BITMAP *existing, uint8_t *alpha_map) /* ICBM: +existing, alpha_map */
 {
    ALLEGRO_BITMAP *bmp;
    png_uint_32 width, height, rowbytes, real_rowbytes;
@@ -201,7 +205,10 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
 #endif
    }
 
-   bmp = al_create_bitmap(width, height);
+   /* ICBM: decode into an existing bitmap if one was given. */
+   if (existing && !icbm_png_fits(existing, width, height))
+      return NULL;
+   bmp = existing ? existing : al_create_bitmap(width, height);
    if (!bmp) {
       ALLEGRO_ERROR("al_create_bitmap failed while loading PNG.\n");
       return NULL;
@@ -217,14 +224,23 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
    if (bpp == 8 && (color_type & PNG_COLOR_MASK_PALETTE) &&
       (flags & ALLEGRO_KEEP_INDEX))
    {
-      lock = al_lock_bitmap(bmp, ALLEGRO_PIXEL_FORMAT_SINGLE_CHANNEL_8,
-         ALLEGRO_LOCK_WRITEONLY);
+      lock = al_lock_bitmap_region(bmp, 0, 0, width, height, /* ICBM: region */
+         ALLEGRO_PIXEL_FORMAT_SINGLE_CHANNEL_8, ALLEGRO_LOCK_WRITEONLY);
       index_only = true;
    }
    else {
-      lock = al_lock_bitmap(bmp, ALLEGRO_PIXEL_FORMAT_ABGR_8888_LE,
-         ALLEGRO_LOCK_WRITEONLY);
+      lock = al_lock_bitmap_region(bmp, 0, 0, width, height, /* ICBM: region */
+         ALLEGRO_PIXEL_FORMAT_ABGR_8888_LE, ALLEGRO_LOCK_WRITEONLY);
       index_only = false;
+   }
+
+   /* ICBM: a failed lock used to crash on lock->data. */
+   if (!lock) {
+      ALLEGRO_ERROR("al_lock_bitmap failed while loading PNG.\n");
+      al_free(buf);
+      if (!existing)
+         al_destroy_bitmap(bmp);
+      return NULL;
    }
 
    /* Read the image, one line at a time (easier to debug!) */
@@ -322,6 +338,9 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
                ALLEGRO_ASSERT(bpp == 8 || bpp == 24 || bpp == 32);
                break;
          }
+         /* ICBM: only the last pass holds final pixels (Adam7 interlace). */
+         if (alpha_map && pass == number_passes - 1)
+            icbm_png_store_alpha_row(alpha_map, y, width, dest_row_start, index_only);
          dest = dest_row_start + lock->pitch;
       }
    }
@@ -339,7 +358,9 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
 
 /* Load a PNG file from disk, doing colour coversion if required.
  */
-ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
+/* ICBM: body shared with _al_load_png_existing_f (png_icbm.inc). */
+static ALLEGRO_BITMAP *load_png_f(ALLEGRO_FILE *fp, int flags,
+   ALLEGRO_BITMAP *existing, uint8_t *alpha_map)
 {
    jmp_buf jmpbuf;
    ALLEGRO_BITMAP *bmp;
@@ -391,7 +412,7 @@ ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
    png_set_sig_bytes(png_ptr, PNG_BYTES_TO_CHECK);
 
    /* Really load the image now. */
-   bmp = really_load_png(png_ptr, info_ptr, flags);
+   bmp = really_load_png(png_ptr, info_ptr, flags, existing, alpha_map);
 
    /* Clean up after the read, and free any memory allocated. */
    png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp) NULL);
@@ -401,6 +422,12 @@ ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
 
 
 
+
+
+ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
+{
+   return load_png_f(fp, flags, NULL, NULL);
+}
 
 
 ALLEGRO_BITMAP *_al_load_png(const char *filename, int flags)

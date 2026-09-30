@@ -34,6 +34,7 @@ typedef struct Handler
    ALLEGRO_IIO_FS_LOADER_FUNCTION fs_loader;
    ALLEGRO_IIO_FS_SAVER_FUNCTION fs_saver;
    ALLEGRO_IIO_IDENTIFIER_FUNCTION identifier;
+   ALLEGRO_IIO_FS_EXISTING_LOADER_FUNCTION fs_existing_loader; /* ICBM */
 } Handler;
 
 
@@ -52,6 +53,7 @@ static Handler *add_iio_table_f(const char *ext)
    ent->fs_loader = NULL;
    ent->fs_saver = NULL;
    ent->identifier = NULL;
+   ent->fs_existing_loader = NULL; /* ICBM */
 
    return ent;
 }
@@ -316,3 +318,6 @@ char const *al_identify_bitmap(char const *filename)
 
 
 /* vim: set sts=3 sw=3 et: */
+
+/* ICBM: existing-bitmap loaders. */
+#include "bitmap_io_icbm.inc"

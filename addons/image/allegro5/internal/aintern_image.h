@@ -76,6 +76,7 @@ ALLEGRO_BITMAP *_al_load_android_bitmap(const char *filename, int flags);
 ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png, (const char *filename, int flags));
 ALLEGRO_IIO_FUNC(bool, _al_save_png, (const char *filename, ALLEGRO_BITMAP *bmp));
 ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png_f, (ALLEGRO_FILE *f, int flags));
+ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png_existing_f, (ALLEGRO_FILE *f, ALLEGRO_BITMAP *bmp, int flags, uint8_t *alpha_map)); /* ICBM */
 ALLEGRO_IIO_FUNC(bool, _al_save_png_f, (ALLEGRO_FILE *f, ALLEGRO_BITMAP *bmp));
 #endif
 
