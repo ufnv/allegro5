@@ -23,6 +23,9 @@
 
 static ALLEGRO_COLOR solid_white = {1, 1, 1, 1};
 
+/* ICBM: Z used for rotated/scaled bitmap draws (declared by the game). */
+float ALLEGRO_PRIMITIVE_STD_Z = 0.0f;
+
 
 static void _bitmap_drawer(ALLEGRO_BITMAP *bitmap, ALLEGRO_COLOR tint,
    float sx, float sy, float sw, float sh, int flags)
@@ -111,7 +114,7 @@ static void _draw_tinted_rotated_scaled_bitmap_region(ALLEGRO_BITMAP *bitmap,
    al_translate_transform(&t, -cx, -cy);
    al_scale_transform(&t, xscale, yscale);
    al_rotate_transform(&t, angle);
-   al_translate_transform(&t, dx, dy);
+   al_translate_transform_3d(&t, dx, dy, ALLEGRO_PRIMITIVE_STD_Z); /* ICBM */
    al_compose_transform(&t, &backup);
 
    al_use_transform(&t);
