@@ -494,10 +494,15 @@ static int win_get_num_video_adapters(void)
    return c;
 }
 
+/* ICBM: adapter 0 = primary monitor. */
+#include "wsystem_icbm.inc"
+
 static int win_find_nth_adapter_with_desktop(DISPLAY_DEVICE* pdd, int adapter)
 {
    int count = 0;
    int c = 0;
+
+   adapter = icbm_translate_adapter(adapter); /* ICBM */
 
    while (EnumDisplayDevices(NULL, count, pdd, 0)) {
       if (pdd->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
