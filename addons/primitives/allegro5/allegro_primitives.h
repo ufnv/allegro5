@@ -95,6 +95,16 @@ ALLEGRO_PRIM_FUNC(void, al_unlock_index_buffer, (ALLEGRO_INDEX_BUFFER* buffer));
 ALLEGRO_PRIM_FUNC(int, al_get_index_buffer_size, (ALLEGRO_INDEX_BUFFER* buffer));
 
 /*
+ * ICBM: thread-safe buffer access (addons/primitives/primitives_icbm.inc)
+ */
+ALLEGRO_PRIM_FUNC(void*, al_lock_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, int offset, int length, int flags, bool is_opengl));
+ALLEGRO_PRIM_FUNC(void, al_unlock_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, bool is_opengl));
+ALLEGRO_PRIM_FUNC(void, al_destroy_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, bool is_opengl));
+ALLEGRO_PRIM_FUNC(void*, al_lock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, int offset, int length, int flags, bool is_opengl));
+ALLEGRO_PRIM_FUNC(void, al_unlock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
+ALLEGRO_PRIM_FUNC(void, al_destroy_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
+
+/*
 * Utilities for high level primitives.
 */
 ALLEGRO_PRIM_FUNC(bool, al_triangulate_polygon, (const float* vertices, size_t vertex_stride, const int* vertex_counts, void (*emit_triangle)(int, int, int, void*), void* userdata));

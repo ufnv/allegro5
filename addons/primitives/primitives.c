@@ -44,6 +44,9 @@ ALLEGRO_DEBUG_CHANNEL("primitives")
 
 static bool addon_initialized = false;
 
+/* ICBM: thread-safe buffer functions. */
+#include "primitives_icbm.inc"
+
 /* Function: al_init_primitives_addon
  */
 bool al_init_primitives_addon(void)
@@ -112,6 +115,7 @@ void al_destroy_vertex_decl(ALLEGRO_VERTEX_DECL* decl)
 ALLEGRO_VERTEX_BUFFER* al_create_vertex_buffer(ALLEGRO_VERTEX_DECL* decl,
    const void* initial_data, int num_vertices, int flags)
 {
+   icbm_remember_buffer_backend(); /* ICBM */
    return _al_create_vertex_buffer(decl, initial_data, num_vertices, flags);
 }
 
@@ -120,6 +124,7 @@ ALLEGRO_VERTEX_BUFFER* al_create_vertex_buffer(ALLEGRO_VERTEX_DECL* decl,
 ALLEGRO_INDEX_BUFFER* al_create_index_buffer(int index_size,
     const void* initial_data, int num_indices, int flags)
 {
+   icbm_remember_buffer_backend(); /* ICBM */
    return _al_create_index_buffer(index_size, initial_data, num_indices, flags);
 }
 

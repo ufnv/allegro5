@@ -112,6 +112,7 @@ ALLEGRO_VERTEX_DECL* _al_create_vertex_decl(const ALLEGRO_VERTEX_ELEMENT* elemen
    if (e->attribute) {
       if (e->storage != ALLEGRO_PRIM_FLOAT_2 &&
           e->storage != ALLEGRO_PRIM_FLOAT_3 &&
+          e->storage != ALLEGRO_PRIM_FLOAT_4 && /* ICBM */
           e->storage != ALLEGRO_PRIM_SHORT_2) {
          ALLEGRO_WARN("Invalid storage for ALLEGRO_PRIM_POSITION.\n");
          goto fail;
@@ -123,6 +124,7 @@ ALLEGRO_VERTEX_DECL* _al_create_vertex_decl(const ALLEGRO_VERTEX_ELEMENT* elemen
       e = &ret->elements[ALLEGRO_PRIM_TEX_COORD_PIXEL];
    if (e->attribute) {
       if (e->storage != ALLEGRO_PRIM_FLOAT_2 &&
+          e->storage != ALLEGRO_PRIM_FLOAT_3 && /* ICBM */
           e->storage != ALLEGRO_PRIM_SHORT_2) {
          ALLEGRO_WARN("Invalid storage for %s.\n", ret->elements[ALLEGRO_PRIM_TEX_COORD].attribute ? "ALLEGRO_PRIM_TEX_COORD" : "ALLEGRO_PRIM_TEX_COORD_PIXEL");
          goto fail;
