@@ -37,7 +37,7 @@ static ALLEGRO_SHADER_PLATFORM resolve_platform(ALLEGRO_DISPLAY *display,
          platform = ALLEGRO_SHADER_GLSL;
       }
       else {
-         platform = ALLEGRO_SHADER_HLSL;
+         platform = ALLEGRO_SHADER_HLSL_SM_3_0; /* ICBM: was ALLEGRO_SHADER_HLSL */
       }
    }
    if (platform == ALLEGRO_SHADER_AUTO_MINIMAL) {
@@ -74,7 +74,9 @@ ALLEGRO_SHADER *al_create_shader(ALLEGRO_SHADER_PLATFORM platform)
          shader = _al_create_shader_hlsl(platform, 2);
          break;
       case ALLEGRO_SHADER_HLSL_SM_3_0:
-         shader = _al_create_shader_hlsl(platform, 3);
+         /* ICBM: report SM 3.0 shaders as ALLEGRO_SHADER_HLSL, so that
+          * al_get_shader_platform() == ALLEGRO_SHADER_HLSL for AUTO shaders. */
+         shader = _al_create_shader_hlsl(ALLEGRO_SHADER_HLSL, 3);
          break;
 #endif
       case ALLEGRO_SHADER_AUTO:
