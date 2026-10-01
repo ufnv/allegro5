@@ -39,9 +39,10 @@
 
 AL_FUNC(LPDIRECT3DDEVICE9,  al_get_d3d_device,         (ALLEGRO_DISPLAY *));
 /* ICBM: HDR output (src/win/d3d_hdr_icbm.inc) */
-enum { ALLEGRO_HDR_OFF = 0, ALLEGRO_HDR_SCRGB = 1, ALLEGRO_HDR_HDR10 = 2 };
+enum { ALLEGRO_HDR_OFF = 0, ALLEGRO_HDR_SCRGB = 1, ALLEGRO_HDR_HDR10 = 2, ALLEGRO_HDR_AUTO = 3 };
 AL_FUNC(void, al_set_new_display_hdr, (int mode));
 AL_FUNC(int,  al_get_display_hdr, (ALLEGRO_DISPLAY *display));
+AL_FUNC(void, al_set_display_hdr_enabled, (ALLEGRO_DISPLAY *display, bool enabled));
 AL_FUNC(void, al_get_display_hdr_levels, (ALLEGRO_DISPLAY *display, float *sdr_white_nits, float *max_nits));
 AL_FUNC(void, al_set_display_hdr_levels, (ALLEGRO_DISPLAY *display, float sdr_white_nits, float max_nits));
 AL_FUNC(LPDIRECT3DTEXTURE9, al_get_d3d_system_texture, (ALLEGRO_BITMAP *));

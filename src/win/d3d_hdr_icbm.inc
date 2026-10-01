@@ -14,15 +14,21 @@
  *    so a value of max_nits / sdr_white_nits reaches the display's peak.
  *
  *    - al_set_new_display_hdr() before al_create_display() requests it.
+ *      ALLEGRO_HDR_AUTO means scRGB if Windows HDR is on for the monitor of
+ *      the display's adapter, otherwise nothing changes (plain Direct3D 9).
  *      Sharing surfaces needs a Direct3D 9Ex device: the IDirect3D9 object is
  *      replaced by an IDirect3D9Ex one if no display exists yet. D3D9Ex has
  *      no D3DPOOL_MANAGED, so Allegro's managed buffers/textures use
  *      _al_d3d_icbm_managed_pool() (D3DPOOL_DEFAULT on 9Ex; 9Ex keeps
  *      default-pool resources over Reset).
  *    - Only windowed / ALLEGRO_FULLSCREEN_WINDOW displays without
- *      multisampling. Anything that fails (no 9Ex, no D3D11, Windows HDR off
- *      on that monitor) falls back to the normal backbuffer and D3D9 Present;
- *      al_get_display_hdr() then returns ALLEGRO_HDR_OFF.
+ *      multisampling. If the setup fails (no 9Ex, no D3D11) the display stays
+ *      on the normal backbuffer and D3D9 Present for good.
+ *    - The display thread checks twice a second whether Windows HDR is on for
+ *      the monitor showing the window (HDR switched off/on, window moved to
+ *      another monitor). The next flip then suspends HDR (back to the normal
+ *      backbuffer and D3D9 Present) or resumes it. al_set_display_hdr_enabled()
+ *      does the same on request. al_get_display_hdr() tells what is in use.
  *    - Three render targets rotate, so that neither device waits for the
  *      other: D3D9 draws frame N while D3D11 presents frame N-1. This adds one
  *      frame of latency; if no flip follows within 50 ms, the display thread
@@ -46,6 +52,8 @@
 #endif
 
 #define ICBM_HDR_BUFFERS 3
+#define ICBM_HDR_IDLE_PRESENT 0.05  /* seconds without a flip */
+#define ICBM_HDR_CHECK_PERIOD 0.5   /* seconds between monitor checks */
 
 typedef HRESULT (WINAPI *ICBM_D3D11_CREATE_DEVICE)(IDXGIAdapter *, D3D_DRIVER_TYPE,
    HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT, UINT, ID3D11Device **,
@@ -64,12 +72,30 @@ typedef struct ICBM_HDR_CONSTANTS
    float hdr10;      /* > 0: PQ / Rec.2020 output */
 } ICBM_HDR_CONSTANTS;
 
+/* What the monitor showing the window can do (icbm_hdr_query_monitor). */
+typedef struct ICBM_HDR_MONITOR
+{
+   bool hdr;         /* Windows HDR is on for it */
+   float sdr_white;  /* nits */
+   float max_nits;
+} ICBM_HDR_MONITOR;
+
 typedef struct ICBM_HDR
 {
-   int mode;          /* requested mode */
-   bool failed;       /* fell back to SDR, for good */
-   bool active;       /* D3D11 output is running */
+   int mode;          /* ALLEGRO_HDR_SCRGB or ALLEGRO_HDR_HDR10 */
+   bool failed;       /* setup or output failed: SDR for good */
+   bool ready;        /* D3D11 device, shaders etc. exist */
+   bool active;       /* rendering into our targets, presenting through D3D11 */
+   volatile bool enabled;  /* al_set_display_hdr_enabled() */
    UINT sc_flags;     /* DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING if supported */
+
+   /* Monitor showing the window, written by the display thread. */
+   volatile bool output_hdr;
+   ICBM_HDR_MONITOR output;
+   double last_check;
+
+   /* al_set_display_hdr_levels(), 0 = from Windows */
+   float user_sdr_white, user_max_nits;
 
    /* D3D9 side */
    IDirect3DSurface9 *real_bb;   /* Allegro's backbuffer while ours is in use */
@@ -102,10 +128,108 @@ typedef struct ICBM_HDR
    bool levels_dirty;
 } ICBM_HDR;
 
-static int icbm_hdr_new_mode = ALLEGRO_HDR_OFF;
+static int icbm_hdr_new_mode = ALLEGRO_HDR_OFF;   /* al_set_new_display_hdr() */
+static int icbm_hdr_create_mode = ALLEGRO_HDR_OFF; /* for the display being created */
 static bool icbm_d3d9ex = false;   /* _al_d3d is an IDirect3D9Ex */
 
 #define ICBM_RELEASE(p) do { if (p) { (p)->Release(); (p) = NULL; } } while (0)
+
+
+/* ---- monitors --------------------------------------------------------- */
+
+/* Windows' "SDR content brightness" for a monitor (GDI name). */
+static float icbm_hdr_sdr_white(const WCHAR *gdi_name)
+{
+   UINT32 npaths = 0, nmodes = 0;
+   float white = 80.0f * 2.5f;   /* Windows' default: 200 nits */
+
+   if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &npaths, &nmodes) != ERROR_SUCCESS)
+      return white;
+   DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)al_calloc(npaths, sizeof *paths);
+   DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)al_calloc(nmodes, sizeof *modes);
+   if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &npaths, paths, &nmodes, modes, NULL) == ERROR_SUCCESS) {
+      for (UINT32 i = 0; i < npaths; i++) {
+         DISPLAYCONFIG_SOURCE_DEVICE_NAME source;
+         source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+         source.header.size = sizeof source;
+         source.header.adapterId = paths[i].sourceInfo.adapterId;
+         source.header.id = paths[i].sourceInfo.id;
+         if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+             wcscmp(source.viewGdiDeviceName, gdi_name) != 0)
+            continue;
+
+         DISPLAYCONFIG_SDR_WHITE_LEVEL level;
+         level.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+         level.header.size = sizeof level;
+         level.header.adapterId = paths[i].targetInfo.adapterId;
+         level.header.id = paths[i].targetInfo.id;
+         if (DisplayConfigGetDeviceInfo(&level.header) == ERROR_SUCCESS)
+            white = level.SDRWhiteLevel / 1000.0f * 80.0f;
+         break;
+      }
+   }
+   al_free(paths);
+   al_free(modes);
+   return white;
+}
+
+static IDXGIFactory1 *icbm_hdr_create_factory(void)
+{
+   static HMODULE dxgi = NULL;
+   ICBM_CREATE_DXGI_FACTORY1 create_factory;
+   IDXGIFactory1 *factory = NULL;
+
+   if (!dxgi)
+      dxgi = LoadLibraryA("dxgi.dll");
+   create_factory = dxgi ? (ICBM_CREATE_DXGI_FACTORY1)GetProcAddress(dxgi, "CreateDXGIFactory1") : NULL;
+   if (!create_factory || FAILED(create_factory(__uuidof(IDXGIFactory1), (void **)&factory)))
+      return NULL;
+   return factory;
+}
+
+/* Is Windows HDR on for this monitor, and its levels. A new DXGI factory
+ * each time: outputs of an older one keep their old colour space.
+ */
+static bool icbm_hdr_query_monitor(HMONITOR monitor, ICBM_HDR_MONITOR *out)
+{
+   IDXGIFactory1 *factory = icbm_hdr_create_factory();
+   IDXGIAdapter1 *adapter = NULL;
+   bool found = false;
+
+   out->hdr = false;
+   out->sdr_white = 0.0f;
+   out->max_nits = 0.0f;
+   if (!factory || !monitor) {
+      ICBM_RELEASE(factory);
+      return false;
+   }
+
+   for (UINT a = 0; !found && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; a++) {
+      IDXGIOutput *output = NULL;
+      for (UINT o = 0; !found && adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; o++) {
+         IDXGIOutput6 *output6 = NULL;
+         DXGI_OUTPUT_DESC1 desc;
+         if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), (void **)&output6)) &&
+             SUCCEEDED(output6->GetDesc1(&desc)) && desc.Monitor == monitor) {
+            found = true;
+            out->hdr = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            out->sdr_white = icbm_hdr_sdr_white(desc.DeviceName);
+            /* Monitors often report nonsense here (seen: 6095 and 128000
+             * nits on the same one); take 1000 nits unless it is plausible.
+             * The game can override it with al_set_display_hdr_levels().
+             */
+            out->max_nits = desc.MaxLuminance;
+            if (out->max_nits <= out->sdr_white || out->max_nits > 4000.0f)
+               out->max_nits = 1000.0f;
+         }
+         ICBM_RELEASE(output6);
+         ICBM_RELEASE(output);
+      }
+      ICBM_RELEASE(adapter);
+   }
+   factory->Release();
+   return found;
+}
 
 
 /* ---- D3D9Ex and the managed pool ---------------------------------- */
@@ -125,8 +249,9 @@ extern "C" DWORD _al_d3d_icbm_managed_texture_usage(void)
 
 static bool d3d_init_display();
 
-/* Called before a display is created: switch to IDirect3D9Ex if HDR is
- * requested and nothing uses the plain IDirect3D9 object yet.
+/* Called before a display is created: decide the HDR mode (ALLEGRO_HDR_AUTO:
+ * only if Windows HDR is on for the adapter's monitor) and switch to
+ * IDirect3D9Ex for it if nothing uses the plain IDirect3D9 object yet.
  */
 static void icbm_hdr_prepare_d3d(void)
 {
@@ -134,9 +259,27 @@ static void icbm_hdr_prepare_d3d(void)
    ICBM_DIRECT3D_CREATE9EX create_ex;
    IDirect3D9Ex *ex = NULL;
 
-   if (icbm_hdr_new_mode == ALLEGRO_HDR_OFF || icbm_d3d9ex)
+   icbm_hdr_create_mode = icbm_hdr_new_mode;
+   if (icbm_hdr_create_mode == ALLEGRO_HDR_OFF)
       return;
-   if (!_al_d3d && !d3d_init_display())
+   if (!_al_d3d && !d3d_init_display()) {
+      icbm_hdr_create_mode = ALLEGRO_HDR_OFF;
+      return;
+   }
+
+   if (icbm_hdr_create_mode == ALLEGRO_HDR_AUTO) {
+      ICBM_HDR_MONITOR monitor;
+      int adapter = _al_win_determine_adapter();
+      HMONITOR hmonitor = _al_d3d->GetAdapterMonitor(adapter < 0 ? 0 : adapter);
+      icbm_hdr_query_monitor(hmonitor, &monitor);
+      icbm_hdr_create_mode = monitor.hdr ? ALLEGRO_HDR_SCRGB : ALLEGRO_HDR_OFF;
+      ALLEGRO_INFO("HDR auto: Windows HDR is %s for the monitor of adapter %d\n",
+         monitor.hdr ? "on" : "off", adapter);
+      if (icbm_hdr_create_mode == ALLEGRO_HDR_OFF)
+         return;
+   }
+
+   if (icbm_d3d9ex)
       return;
    if (system->displays._size > 0) {
       ALLEGRO_WARN("HDR: a display already exists, cannot switch to Direct3D 9Ex\n");
@@ -156,7 +299,7 @@ static void icbm_hdr_prepare_d3d(void)
 }
 
 
-/* ---- D3D9 render targets ------------------------------------------ */
+/* ---- D3D9 render targets, suspend / resume ----------------------------- */
 
 static ICBM_HDR *icbm_hdr(ALLEGRO_DISPLAY_D3D *d)
 {
@@ -187,23 +330,29 @@ static void icbm_hdr_release_targets(ICBM_HDR *hdr)
    hdr->pending_idx = -1;
 }
 
-static void icbm_hdr_release_d3d11(ICBM_HDR *hdr)
+/* The swap chain only; the D3D11 device stays for a later resume. */
+static void icbm_hdr_release_output(ICBM_HDR *hdr)
 {
    if (hdr->ctx) {
       hdr->ctx->ClearState();
       hdr->ctx->Flush();
    }
+   ICBM_RELEASE(hdr->rtv);
+   ICBM_RELEASE(hdr->sc);
+}
+
+static void icbm_hdr_release_d3d11(ICBM_HDR *hdr)
+{
+   icbm_hdr_release_output(hdr);
    icbm_hdr_release_d3d11_textures(hdr);
    for (int i = 0; i < ICBM_HDR_BUFFERS; i++)
       ICBM_RELEASE(hdr->q11[i]);
    ICBM_RELEASE(hdr->cb);
    ICBM_RELEASE(hdr->ps);
    ICBM_RELEASE(hdr->vs);
-   ICBM_RELEASE(hdr->rtv);
-   ICBM_RELEASE(hdr->sc);
    ICBM_RELEASE(hdr->ctx);
    ICBM_RELEASE(hdr->dev);
-   hdr->active = false;
+   hdr->ready = false;
 }
 
 /* Point the display (and the device, if it draws there) at surface s. */
@@ -223,16 +372,57 @@ static void icbm_hdr_set_backbuffer(ALLEGRO_DISPLAY_D3D *d, IDirect3DSurface9 *s
    }
 }
 
-/* Give up on HDR for this display and go back to the real backbuffer. */
-static void icbm_hdr_fall_back(ALLEGRO_DISPLAY_D3D *d, const char *why)
+/* Shared FP16 targets the size of surface bb. */
+static bool icbm_hdr_create_targets(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, IDirect3DSurface9 *bb)
+{
+   D3DSURFACE_DESC desc;
+
+   if (bb->GetDesc(&desc) != D3D_OK || desc.MultiSampleType != D3DMULTISAMPLE_NONE)
+      return false;
+   for (int i = 0; i < ICBM_HDR_BUFFERS; i++) {
+      if (d->device->CreateRenderTarget(desc.Width, desc.Height,
+            D3DFMT_A16B16G16R16F, D3DMULTISAMPLE_NONE, 0, FALSE,
+            &hdr->rt[i], &hdr->share[i]) != D3D_OK || !hdr->share[i] ||
+          d->device->CreateQuery(D3DQUERYTYPE_EVENT, &hdr->q9[i]) != D3D_OK) {
+         icbm_hdr_release_targets(hdr);
+         return false;
+      }
+   }
+   hdr->w = desc.Width;
+   hdr->h = desc.Height;
+   hdr->write_idx = 0;
+   hdr->pending_idx = -1;
+   return true;
+}
+
+/* Back to the real backbuffer and D3D9 Present; keep_frame copies what was
+ * drawn into our target, so the frame being flipped is not lost.
+ */
+static void icbm_hdr_suspend(ALLEGRO_DISPLAY_D3D *d, const char *why, bool keep_frame)
 {
    ICBM_HDR *hdr = icbm_hdr(d);
 
-   ALLEGRO_WARN("HDR off: %s\n", why);
+   if (!hdr->active)
+      return;
+   ALLEGRO_INFO("HDR suspended: %s\n", why);
    if (hdr->real_bb) {
+      if (keep_frame && hdr->rt[hdr->write_idx])
+         d->device->StretchRect(hdr->rt[hdr->write_idx], NULL, hdr->real_bb, NULL, D3DTEXF_NONE);
       icbm_hdr_set_backbuffer(d, hdr->real_bb);
       hdr->real_bb = NULL;
    }
+   icbm_hdr_release_output(hdr);
+   icbm_hdr_release_targets(hdr);
+   hdr->active = false;
+}
+
+/* Give up on HDR for this display. */
+static void icbm_hdr_fall_back(ALLEGRO_DISPLAY_D3D *d, const char *why, bool keep_frame)
+{
+   ICBM_HDR *hdr = icbm_hdr(d);
+
+   ALLEGRO_WARN("HDR off for good: %s\n", why);
+   icbm_hdr_suspend(d, why, keep_frame);
    icbm_hdr_release_d3d11(hdr);
    icbm_hdr_release_targets(hdr);
    hdr->failed = true;
@@ -249,52 +439,40 @@ static void icbm_hdr_backbuffer_acquired(ALLEGRO_DISPLAY_D3D *d)
       return;
 
    if (!hdr) {
-      if (icbm_hdr_new_mode == ALLEGRO_HDR_OFF)
+      if (icbm_hdr_create_mode == ALLEGRO_HDR_OFF)
          return;
       hdr = (ICBM_HDR *)al_calloc(1, sizeof *hdr);
-      hdr->mode = icbm_hdr_new_mode;
+      hdr->mode = icbm_hdr_create_mode == ALLEGRO_HDR_HDR10 ? ALLEGRO_HDR_HDR10 : ALLEGRO_HDR_SCRGB;
+      hdr->enabled = true;
       hdr->pending_idx = -1;
       d->icbm_hdr = hdr;
       if (!icbm_d3d9ex) {
-         icbm_hdr_fall_back(d, "no Direct3D 9Ex");
-         return;
+         ALLEGRO_WARN("HDR off: no Direct3D 9Ex\n");
+         hdr->failed = true;
       }
-      if (al_display->flags & ALLEGRO_FULLSCREEN) {
-         icbm_hdr_fall_back(d, "exclusive fullscreen (use ALLEGRO_FULLSCREEN_WINDOW)");
-         return;
+      else if (al_display->flags & ALLEGRO_FULLSCREEN) {
+         ALLEGRO_WARN("HDR off: exclusive fullscreen (use ALLEGRO_FULLSCREEN_WINDOW)\n");
+         hdr->failed = true;
       }
+      return;  /* icbm_hdr_display_created() takes over once the display exists */
    }
-   if (hdr->failed)
+   if (hdr->failed || !hdr->active)
       return;
 
+   /* Reset while active (resize): new targets if the size changed. */
    if (d->render_target->GetDesc(&desc) != D3D_OK) {
-      icbm_hdr_fall_back(d, "GetDesc failed");
+      icbm_hdr_fall_back(d, "GetDesc failed", false);
       return;
    }
-   if (desc.MultiSampleType != D3DMULTISAMPLE_NONE) {
-      icbm_hdr_fall_back(d, "multisampled backbuffer");
-      return;
-   }
-
-   if (hdr->rt[0] && ((int)desc.Width != hdr->w || (int)desc.Height != hdr->h))
+   if ((int)desc.Width != hdr->w || (int)desc.Height != hdr->h) {
       icbm_hdr_release_targets(hdr);
-
-   if (!hdr->rt[0]) {
-      for (int i = 0; i < ICBM_HDR_BUFFERS; i++) {
-         if (d->device->CreateRenderTarget(desc.Width, desc.Height,
-               D3DFMT_A16B16G16R16F, D3DMULTISAMPLE_NONE, 0, FALSE,
-               &hdr->rt[i], &hdr->share[i]) != D3D_OK || !hdr->share[i] ||
-             d->device->CreateQuery(D3DQUERYTYPE_EVENT, &hdr->q9[i]) != D3D_OK) {
-            icbm_hdr_fall_back(d, "cannot create shared FP16 render targets");
-            return;
-         }
+      if (!icbm_hdr_create_targets(d, hdr, d->render_target)) {
+         hdr->active = false;   /* real_bb is already given back */
+         icbm_hdr_release_output(hdr);
+         icbm_hdr_fall_back(d, "cannot create shared FP16 render targets", false);
+         return;
       }
-      hdr->w = desc.Width;
-      hdr->h = desc.Height;
-      hdr->write_idx = 0;
-      hdr->pending_idx = -1;
    }
-
    hdr->real_bb = d->render_target;
    d->render_target = hdr->rt[hdr->write_idx];
 }
@@ -355,46 +533,15 @@ static const char icbm_hdr_shader[] =
    "   return float4(nits / 80, 1);\n"
    "}\n";
 
-/* Windows' "SDR content brightness" for the monitor showing the window. */
-static float icbm_hdr_sdr_white(const WCHAR *gdi_name)
-{
-   UINT32 npaths = 0, nmodes = 0;
-   float white = 80.0f * 2.5f;   /* Windows' default: 200 nits */
-
-   if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &npaths, &nmodes) != ERROR_SUCCESS)
-      return white;
-   DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)al_calloc(npaths, sizeof *paths);
-   DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)al_calloc(nmodes, sizeof *modes);
-   if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &npaths, paths, &nmodes, modes, NULL) == ERROR_SUCCESS) {
-      for (UINT32 i = 0; i < npaths; i++) {
-         DISPLAYCONFIG_SOURCE_DEVICE_NAME source;
-         source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-         source.header.size = sizeof source;
-         source.header.adapterId = paths[i].sourceInfo.adapterId;
-         source.header.id = paths[i].sourceInfo.id;
-         if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
-             wcscmp(source.viewGdiDeviceName, gdi_name) != 0)
-            continue;
-
-         DISPLAYCONFIG_SDR_WHITE_LEVEL level;
-         level.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
-         level.header.size = sizeof level;
-         level.header.adapterId = paths[i].targetInfo.adapterId;
-         level.header.id = paths[i].targetInfo.id;
-         if (DisplayConfigGetDeviceInfo(&level.header) == ERROR_SUCCESS)
-            white = level.SDRWhiteLevel / 1000.0f * 80.0f;
-         break;
-      }
-   }
-   al_free(paths);
-   al_free(modes);
-   return white;
-}
-
-static void icbm_hdr_set_knee(ICBM_HDR *hdr)
+/* Levels from the monitor, unless the game set its own. */
+static void icbm_hdr_update_levels(ICBM_HDR *hdr)
 {
    ICBM_HDR_CONSTANTS *l = &hdr->levels;
 
+   l->sdr_white = hdr->user_sdr_white > 0.0f ? hdr->user_sdr_white :
+      hdr->output.sdr_white > 0.0f ? hdr->output.sdr_white : 200.0f;
+   l->max_nits = hdr->user_max_nits > 0.0f ? hdr->user_max_nits :
+      hdr->output.max_nits > 0.0f ? hdr->output.max_nits : 1000.0f;
    if (l->max_nits < l->sdr_white)
       l->max_nits = l->sdr_white;
    l->knee = l->sdr_white + 0.75f * (l->max_nits - l->sdr_white);
@@ -422,18 +569,15 @@ static bool icbm_hdr_compile(ICBM_HDR *hdr, const char *entry, const char *targe
 /* The DXGI adapter Direct3D 9 renders on (surfaces are shared per adapter). */
 static IDXGIAdapter1 *icbm_hdr_find_adapter(ALLEGRO_DISPLAY_D3D *d)
 {
-   ICBM_CREATE_DXGI_FACTORY1 create_factory;
-   IDXGIFactory1 *factory = NULL;
+   IDXGIFactory1 *factory = icbm_hdr_create_factory();
    IDXGIAdapter1 *adapter = NULL, *found = NULL;
-   HMODULE dxgi = GetModuleHandleA("dxgi.dll");
    LUID luid;
    int n = d->win_display.adapter < 0 ? 0 : d->win_display.adapter;
 
-   if (((IDirect3D9Ex *)_al_d3d)->GetAdapterLUID(n, &luid) != D3D_OK)
+   if (!factory || ((IDirect3D9Ex *)_al_d3d)->GetAdapterLUID(n, &luid) != D3D_OK) {
+      ICBM_RELEASE(factory);
       return NULL;
-   create_factory = dxgi ? (ICBM_CREATE_DXGI_FACTORY1)GetProcAddress(dxgi, "CreateDXGIFactory1") : NULL;
-   if (!create_factory || FAILED(create_factory(__uuidof(IDXGIFactory1), (void **)&factory)))
-      return NULL;
+   }
    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
       DXGI_ADAPTER_DESC1 desc;
       adapter->GetDesc1(&desc);
@@ -447,53 +591,77 @@ static IDXGIAdapter1 *icbm_hdr_find_adapter(ALLEGRO_DISPLAY_D3D *d)
    return found;
 }
 
-/* After the display is created (calling thread): start the D3D11 output. */
-static void icbm_hdr_display_created(ALLEGRO_DISPLAY_D3D *d)
+/* D3D11 device, shaders, constants, queries: everything but the swap chain. */
+static const char *icbm_hdr_setup_d3d11(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr)
 {
-   ICBM_HDR *hdr = icbm_hdr(d);
    ICBM_D3D11_CREATE_DEVICE create_device;
    IDXGIAdapter1 *adapter;
-   IDXGIFactory2 *factory = NULL;
-   IDXGISwapChain3 *sc3 = NULL;
-   IDXGIOutput *output = NULL;
-   IDXGIOutput6 *output6 = NULL;
-   DXGI_OUTPUT_DESC1 out_desc;
    ID3DBlob *code = NULL;
-   UINT support = 0;
-   DXGI_COLOR_SPACE_TYPE space;
-   bool ok = false;
-
-   if (!hdr || hdr->failed)
-      return;
+   D3D11_BUFFER_DESC bd;
+   HRESULT hr;
 
    hdr->d3d11_module = LoadLibraryA("d3d11.dll");
    hdr->compiler_module = LoadLibraryA("d3dcompiler_47.dll");
    create_device = hdr->d3d11_module ? (ICBM_D3D11_CREATE_DEVICE)GetProcAddress(hdr->d3d11_module, "D3D11CreateDevice") : NULL;
-   if (!create_device || !hdr->compiler_module) {
-      icbm_hdr_fall_back(d, "d3d11.dll or d3dcompiler_47.dll missing");
-      return;
-   }
+   if (!create_device || !hdr->compiler_module)
+      return "d3d11.dll or d3dcompiler_47.dll missing";
 
    adapter = icbm_hdr_find_adapter(d);
-   if (!adapter) {
-      icbm_hdr_fall_back(d, "no DXGI adapter for the Direct3D 9 adapter");
-      return;
-   }
-   if (FAILED(create_device(adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, 0, NULL, 0,
-         D3D11_SDK_VERSION, &hdr->dev, NULL, &hdr->ctx))) {
-      adapter->Release();
-      icbm_hdr_fall_back(d, "D3D11CreateDevice failed");
-      return;
-   }
-   adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&factory);
+   if (!adapter)
+      return "no DXGI adapter for the Direct3D 9 adapter";
+   hr = create_device(adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, 0, NULL, 0,
+      D3D11_SDK_VERSION, &hdr->dev, NULL, &hdr->ctx);
    adapter->Release();
+   if (FAILED(hr))
+      return "D3D11CreateDevice failed";
 
-   do {
-      DXGI_SWAP_CHAIN_DESC1 sd;
-      D3D11_BUFFER_DESC bd;
+   if (!icbm_hdr_compile(hdr, "vs_main", "vs_4_0", &code) ||
+       FAILED(hdr->dev->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &hdr->vs))) {
+      ICBM_RELEASE(code);
+      return "vertex shader";
+   }
+   ICBM_RELEASE(code);
+   if (!icbm_hdr_compile(hdr, "ps_main", "ps_4_0", &code) ||
+       FAILED(hdr->dev->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &hdr->ps))) {
+      ICBM_RELEASE(code);
+      return "pixel shader";
+   }
+   ICBM_RELEASE(code);
 
-      if (!factory)
-         break;
+   memset(&bd, 0, sizeof bd);
+   bd.ByteWidth = sizeof(ICBM_HDR_CONSTANTS);
+   bd.Usage = D3D11_USAGE_DEFAULT;
+   bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+   if (FAILED(hdr->dev->CreateBuffer(&bd, NULL, &hdr->cb)))
+      return "constant buffer";
+
+   for (int i = 0; i < ICBM_HDR_BUFFERS; i++) {
+      D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
+      if (FAILED(hdr->dev->CreateQuery(&qd, &hdr->q11[i])))
+         return "queries";
+   }
+   hdr->ready = true;
+   return NULL;
+}
+
+/* Flip-model swap chain on the display's window, in the output colour space. */
+static const char *icbm_hdr_create_swap_chain(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr)
+{
+   IDXGIDevice *xdev = NULL;
+   IDXGIAdapter *adapter = NULL;
+   IDXGIFactory2 *factory = NULL;
+   IDXGISwapChain3 *sc3 = NULL;
+   DXGI_SWAP_CHAIN_DESC1 sd;
+   DXGI_COLOR_SPACE_TYPE space;
+   UINT support = 0;
+   const char *error = NULL;
+
+   if (FAILED(hdr->dev->QueryInterface(__uuidof(IDXGIDevice), (void **)&xdev)) ||
+       FAILED(xdev->GetAdapter(&adapter)) ||
+       FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&factory)))
+      error = "no IDXGIFactory2";
+
+   if (!error) {
       memset(&sd, 0, sizeof sd);
       sd.Width = hdr->w;
       sd.Height = hdr->h;
@@ -507,93 +675,100 @@ static void icbm_hdr_display_created(ALLEGRO_DISPLAY_D3D *d)
        * rate once both buffers are queued, unless tearing is allowed (D3D9
        * without vsync was not capped).
        */
-      {
-         IDXGIFactory5 *factory5 = NULL;
-         BOOL tearing = FALSE;
-         if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory5), (void **)&factory5))) {
-            if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing)))
-               tearing = FALSE;
-            factory5->Release();
-         }
-         hdr->sc_flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
-         sd.Flags = hdr->sc_flags;
+      IDXGIFactory5 *factory5 = NULL;
+      BOOL tearing = FALSE;
+      if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory5), (void **)&factory5))) {
+         if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing)))
+            tearing = FALSE;
+         factory5->Release();
       }
+      hdr->sc_flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+      sd.Flags = hdr->sc_flags;
 
-      if (FAILED(factory->CreateSwapChainForHwnd(hdr->dev, d->win_display.window, &sd, NULL, NULL, &hdr->sc))) {
-         ALLEGRO_ERROR("HDR: CreateSwapChainForHwnd failed\n");
-         break;
-      }
+      if (FAILED(factory->CreateSwapChainForHwnd(hdr->dev, d->win_display.window, &sd, NULL, NULL, &hdr->sc)))
+         error = "CreateSwapChainForHwnd failed";
+   }
+   if (!error) {
       factory->MakeWindowAssociation(d->win_display.window, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
       hdr->sc_w = hdr->w;
       hdr->sc_h = hdr->h;
-
-      /* Is Windows HDR on for the monitor showing the window? */
-      if (FAILED(hdr->sc->GetContainingOutput(&output)) ||
-          FAILED(output->QueryInterface(__uuidof(IDXGIOutput6), (void **)&output6))) {
-         ALLEGRO_ERROR("HDR: no IDXGIOutput6\n");
-         break;
-      }
-      output6->GetDesc1(&out_desc);
-      if (out_desc.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
-         ALLEGRO_WARN("HDR: Windows HDR is off on this monitor\n");
-         break;
-      }
-      hdr->levels.sdr_white = icbm_hdr_sdr_white(out_desc.DeviceName);
-      /* Monitors often report nonsense here (seen: 6095 and 128000 nits on
-       * the same one); take 1000 nits unless the value is plausible. The
-       * game can override it with al_set_display_hdr_levels().
-       */
-      hdr->levels.max_nits = out_desc.MaxLuminance;
-      if (hdr->levels.max_nits <= hdr->levels.sdr_white || hdr->levels.max_nits > 4000.0f)
-         hdr->levels.max_nits = 1000.0f;
-      icbm_hdr_set_knee(hdr);
 
       space = hdr->mode == ALLEGRO_HDR_HDR10 ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
                                               : DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
       if (FAILED(hdr->sc->QueryInterface(__uuidof(IDXGISwapChain3), (void **)&sc3)) ||
           FAILED(sc3->CheckColorSpaceSupport(space, &support)) ||
           !(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ||
-          FAILED(sc3->SetColorSpace1(space))) {
-         ALLEGRO_ERROR("HDR: colour space not supported\n");
-         break;
-      }
-
-      if (!icbm_hdr_compile(hdr, "vs_main", "vs_4_0", &code) ||
-          FAILED(hdr->dev->CreateVertexShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &hdr->vs)))
-         break;
-      ICBM_RELEASE(code);
-      if (!icbm_hdr_compile(hdr, "ps_main", "ps_4_0", &code) ||
-          FAILED(hdr->dev->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &hdr->ps)))
-         break;
-
-      memset(&bd, 0, sizeof bd);
-      bd.ByteWidth = sizeof(ICBM_HDR_CONSTANTS);
-      bd.Usage = D3D11_USAGE_DEFAULT;
-      bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-      if (FAILED(hdr->dev->CreateBuffer(&bd, NULL, &hdr->cb)))
-         break;
-
-      for (int i = 0; i < ICBM_HDR_BUFFERS; i++) {
-         D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
-         if (FAILED(hdr->dev->CreateQuery(&qd, &hdr->q11[i])))
-            break;
-      }
-      ok = hdr->q11[ICBM_HDR_BUFFERS - 1] != NULL;
-   } while (0);
-
-   ICBM_RELEASE(code);
-   ICBM_RELEASE(sc3);
-   ICBM_RELEASE(output6);
-   ICBM_RELEASE(output);
-   ICBM_RELEASE(factory);
-
-   if (!ok) {
-      icbm_hdr_fall_back(d, "D3D11 output could not be set up");
-      return;
+          FAILED(sc3->SetColorSpace1(space)))
+         error = "colour space not supported";
    }
+
+   ICBM_RELEASE(sc3);
+   ICBM_RELEASE(factory);
+   ICBM_RELEASE(adapter);
+   ICBM_RELEASE(xdev);
+   if (error)
+      ICBM_RELEASE(hdr->sc);
+   return error;
+}
+
+/* Start presenting through D3D11 (drawing thread, outside BeginScene).
+ * keep_frame copies what was drawn into the real backbuffer to our target.
+ */
+static bool icbm_hdr_activate(ALLEGRO_DISPLAY_D3D *d, bool keep_frame)
+{
+   ICBM_HDR *hdr = icbm_hdr(d);
+   IDirect3DSurface9 *bb = d->render_target;
+   const char *error;
+
+   if (hdr->active || hdr->failed || !hdr->ready || !bb)
+      return hdr->active;
+
+   if (!icbm_hdr_create_targets(d, hdr, bb)) {
+      icbm_hdr_fall_back(d, "cannot create shared FP16 render targets", false);
+      return false;
+   }
+   if ((error = icbm_hdr_create_swap_chain(d, hdr)) != NULL) {
+      icbm_hdr_fall_back(d, error, false);
+      return false;
+   }
+   icbm_hdr_update_levels(hdr);
+
+   if (keep_frame)
+      d->device->StretchRect(bb, NULL, hdr->rt[hdr->write_idx], NULL, D3DTEXF_NONE);
+   hdr->real_bb = bb;
+   icbm_hdr_set_backbuffer(d, hdr->rt[hdr->write_idx]);
+   hdr->last_flip = al_get_time();
+   hdr->present_error = NULL;
    hdr->active = true;
    ALLEGRO_INFO("HDR on (%s): SDR white %.0f nits, peak %.0f nits\n",
       hdr->mode == ALLEGRO_HDR_HDR10 ? "HDR10" : "scRGB", hdr->levels.sdr_white, hdr->levels.max_nits);
+   return true;
+}
+
+/* After the display is created (calling thread): set up D3D11 and start, if
+ * Windows HDR is on for the monitor showing the window.
+ */
+static void icbm_hdr_display_created(ALLEGRO_DISPLAY_D3D *d)
+{
+   ICBM_HDR *hdr = icbm_hdr(d);
+   const char *error;
+
+   if (!hdr || hdr->failed)
+      return;
+
+   if ((error = icbm_hdr_setup_d3d11(d, hdr)) != NULL) {
+      icbm_hdr_fall_back(d, error, false);
+      return;
+   }
+
+   icbm_hdr_query_monitor(MonitorFromWindow(d->win_display.window, MONITOR_DEFAULTTONEAREST), &hdr->output);
+   hdr->output_hdr = hdr->output.hdr;
+   hdr->last_check = al_get_time();
+
+   if (hdr->output_hdr)
+      icbm_hdr_activate(d, false);
+   else
+      ALLEGRO_INFO("HDR waiting: Windows HDR is off for the monitor showing the window\n");
 }
 
 static void icbm_hdr_wait9(IDirect3DQuery9 *q)
@@ -665,21 +840,32 @@ static const char *icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr
 }
 
 /* Replaces IDirect3DDevice9::Present in d3d_flip_display (after EndScene,
- * present_mutex held). Returns false if HDR is not active: Allegro then
- * presents as usual.
+ * present_mutex held). Suspends or resumes HDR when the monitor or
+ * al_set_display_hdr_enabled() asks for it. Returns false if HDR is not
+ * active: Allegro then presents the real backbuffer as usual.
  */
 static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
 {
    ICBM_HDR *hdr = icbm_hdr(d);
    const char *error;
+   bool want;
    int w, next;
 
-   if (!hdr || !hdr->active || !hdr->rt[0])
+   if (!hdr || hdr->failed || !hdr->ready)
       return false;
    if (hdr->present_error) {
-      icbm_hdr_fall_back(d, hdr->present_error);
+      icbm_hdr_fall_back(d, hdr->present_error, true);
       return false;
    }
+
+   want = hdr->enabled && hdr->output_hdr;
+   if (hdr->active && !want) {
+      icbm_hdr_suspend(d, hdr->enabled ? "Windows HDR is off for the monitor showing the window" :
+         "disabled by the program", true);
+      return false;
+   }
+   if (!hdr->active && (!want || !icbm_hdr_activate(d, true)))
+      return false;
 
    /* Frame in rt[w] is complete once this query is signalled. */
    w = hdr->write_idx;
@@ -692,7 +878,7 @@ static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
    if (hdr->pending_idx >= 0) {
       icbm_hdr_wait9(hdr->q9[hdr->pending_idx]);
       if ((error = icbm_hdr_present_target(d, hdr, hdr->pending_idx)) != NULL) {
-         icbm_hdr_fall_back(d, error);
+         icbm_hdr_fall_back(d, error, true);
          return false;
       }
    }
@@ -711,19 +897,41 @@ static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
    return true;
 }
 
-/* Display thread, every pass of its loop (at least every millisecond): a
- * frame is shown one flip late, so when no flip follows (a loading screen
- * drawn once before a long load) present the waiting frame anyway.
+/* Display thread, every pass of its loop (at least every millisecond):
+ * - twice a second, whether Windows HDR is on for the monitor showing the
+ *   window (the next flip acts on it) and its levels;
+ * - a frame is shown one flip late, so when no flip follows (a loading
+ *   screen drawn once before a long load) present the waiting frame anyway.
  */
-#define ICBM_HDR_IDLE_PRESENT 0.05 /* seconds without a flip */
-
 static void icbm_hdr_idle(ALLEGRO_DISPLAY_D3D *d)
 {
    ICBM_HDR *hdr = icbm_hdr(d);
    const char *error;
+   double now;
 
-   if (!hdr || !hdr->active || hdr->pending_idx < 0 || hdr->present_error ||
-       al_get_time() - hdr->last_flip < ICBM_HDR_IDLE_PRESENT)
+   if (!hdr || hdr->failed || !hdr->ready)
+      return;
+   now = al_get_time();
+
+   if (now - hdr->last_check >= ICBM_HDR_CHECK_PERIOD) {
+      ICBM_HDR_MONITOR monitor;
+      hdr->last_check = now;
+      if (icbm_hdr_query_monitor(MonitorFromWindow(d->win_display.window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+         if (monitor.hdr != hdr->output_hdr)
+            ALLEGRO_INFO("HDR: Windows HDR is now %s for the monitor showing the window\n", monitor.hdr ? "on" : "off");
+         if (monitor.sdr_white != hdr->output.sdr_white || monitor.max_nits != hdr->output.max_nits) {
+            al_lock_mutex(present_mutex);
+            hdr->output = monitor;
+            if (hdr->active)
+               icbm_hdr_update_levels(hdr);
+            al_unlock_mutex(present_mutex);
+         }
+         hdr->output_hdr = monitor.hdr;
+      }
+   }
+
+   if (!hdr->active || hdr->pending_idx < 0 || hdr->present_error ||
+       now - hdr->last_flip < ICBM_HDR_IDLE_PRESENT)
       return;
 
    al_lock_mutex(present_mutex);
@@ -748,8 +956,10 @@ static ALLEGRO_DISPLAY_D3D *icbm_hdr_d3d_display(ALLEGRO_DISPLAY *display)
 }
 
 /* Function: al_set_new_display_hdr
- * ALLEGRO_HDR_OFF, ALLEGRO_HDR_SCRGB or ALLEGRO_HDR_HDR10 for displays
- * created after this call (Direct3D only).
+ * ALLEGRO_HDR_OFF, ALLEGRO_HDR_SCRGB, ALLEGRO_HDR_HDR10 or ALLEGRO_HDR_AUTO
+ * (scRGB if Windows HDR is on for the monitor of the display's adapter,
+ * otherwise as ALLEGRO_HDR_OFF) for displays created after this call
+ * (Direct3D only).
  */
 void al_set_new_display_hdr(int mode)
 {
@@ -757,7 +967,10 @@ void al_set_new_display_hdr(int mode)
 }
 
 /* Function: al_get_display_hdr
- * The HDR mode the display really uses, ALLEGRO_HDR_OFF if none.
+ * The HDR mode the display uses right now, ALLEGRO_HDR_OFF if none. It can
+ * change on any flip: HDR is suspended while Windows HDR is off for the
+ * monitor showing the window, or while disabled by
+ * al_set_display_hdr_enabled().
  */
 int al_get_display_hdr(ALLEGRO_DISPLAY *display)
 {
@@ -765,6 +978,20 @@ int al_get_display_hdr(ALLEGRO_DISPLAY *display)
    ICBM_HDR *hdr = d ? icbm_hdr(d) : NULL;
 
    return hdr && hdr->active ? hdr->mode : ALLEGRO_HDR_OFF;
+}
+
+/* Function: al_set_display_hdr_enabled
+ * Suspends (false) or resumes (true, the default) HDR output of a display
+ * created with HDR, from the next flip on. Resuming needs Windows HDR on for
+ * the monitor showing the window.
+ */
+void al_set_display_hdr_enabled(ALLEGRO_DISPLAY *display, bool enabled)
+{
+   ALLEGRO_DISPLAY_D3D *d = icbm_hdr_d3d_display(display);
+   ICBM_HDR *hdr = d ? icbm_hdr(d) : NULL;
+
+   if (hdr)
+      hdr->enabled = enabled;
 }
 
 /* Function: al_get_display_hdr_levels
@@ -785,20 +1012,22 @@ void al_get_display_hdr_levels(ALLEGRO_DISPLAY *display, float *sdr_white_nits, 
 }
 
 /* Function: al_set_display_hdr_levels
- * Overrides the levels read from Windows; values <= 0 keep the current one.
+ * Overrides the levels read from Windows (also for a later resume); values
+ * <= 0 go back to the monitor's.
  */
 void al_set_display_hdr_levels(ALLEGRO_DISPLAY *display, float sdr_white_nits, float max_nits)
 {
    ALLEGRO_DISPLAY_D3D *d = icbm_hdr_d3d_display(display);
    ICBM_HDR *hdr = d ? icbm_hdr(d) : NULL;
 
-   if (!hdr || !hdr->active)
+   if (!hdr)
       return;
-   if (sdr_white_nits > 0.0f)
-      hdr->levels.sdr_white = sdr_white_nits;
-   if (max_nits > 0.0f)
-      hdr->levels.max_nits = max_nits;
-   icbm_hdr_set_knee(hdr);
+   al_lock_mutex(present_mutex);
+   hdr->user_sdr_white = sdr_white_nits > 0.0f ? sdr_white_nits : 0.0f;
+   hdr->user_max_nits = max_nits > 0.0f ? max_nits : 0.0f;
+   if (hdr->active)
+      icbm_hdr_update_levels(hdr);
+   al_unlock_mutex(present_mutex);
 }
 
 /* vim: set sts=3 sw=3 et: */
