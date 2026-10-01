@@ -69,6 +69,7 @@ typedef struct ICBM_HDR
    int mode;          /* requested mode */
    bool failed;       /* fell back to SDR, for good */
    bool active;       /* D3D11 output is running */
+   UINT sc_flags;     /* DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING if supported */
 
    /* D3D9 side */
    IDirect3DSurface9 *real_bb;   /* Allegro's backbuffer while ours is in use */
@@ -501,6 +502,23 @@ static void icbm_hdr_display_created(ALLEGRO_DISPLAY_D3D *d)
       sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
       sd.BufferCount = 2;
       sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+      /* Without vsync a flip-model swap chain still blocks at the refresh
+       * rate once both buffers are queued, unless tearing is allowed (D3D9
+       * without vsync was not capped).
+       */
+      {
+         IDXGIFactory5 *factory5 = NULL;
+         BOOL tearing = FALSE;
+         if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory5), (void **)&factory5))) {
+            if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing)))
+               tearing = FALSE;
+            factory5->Release();
+         }
+         hdr->sc_flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+         sd.Flags = hdr->sc_flags;
+      }
+
       if (FAILED(factory->CreateSwapChainForHwnd(hdr->dev, d->win_display.window, &sd, NULL, NULL, &hdr->sc))) {
          ALLEGRO_ERROR("HDR: CreateSwapChainForHwnd failed\n");
          break;
@@ -595,7 +613,7 @@ static const char *icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr
       ctx->ClearState();
       ctx->Flush();
       ICBM_RELEASE(hdr->rtv);
-      if (FAILED(hdr->sc->ResizeBuffers(0, hdr->w, hdr->h, DXGI_FORMAT_UNKNOWN, 0)))
+      if (FAILED(hdr->sc->ResizeBuffers(0, hdr->w, hdr->h, DXGI_FORMAT_UNKNOWN, hdr->sc_flags)))
          return "ResizeBuffers failed";
       hdr->sc_w = hdr->w;
       hdr->sc_h = hdr->h;
@@ -639,7 +657,8 @@ static const char *icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr
    ctx->End(hdr->q11[idx]);
    hdr->q11_pending[idx] = true;
 
-   HRESULT hr = hdr->sc->Present(d->vsync ? 1 : 0, 0);
+   HRESULT hr = hdr->sc->Present(d->vsync ? 1 : 0,
+      !d->vsync && hdr->sc_flags ? DXGI_PRESENT_ALLOW_TEARING : 0);
    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
       return "D3D11 device removed";
    return NULL;
