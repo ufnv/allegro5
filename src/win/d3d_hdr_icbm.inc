@@ -25,7 +25,9 @@
  *      al_get_display_hdr() then returns ALLEGRO_HDR_OFF.
  *    - Three render targets rotate, so that neither device waits for the
  *      other: D3D9 draws frame N while D3D11 presents frame N-1. This adds one
- *      frame of latency.
+ *      frame of latency; if no flip follows within 50 ms, the display thread
+ *      presents the waiting frame (icbm_hdr_idle), so a screen drawn once
+ *      before a long load still appears.
  *    - Locking or drawing from the backbuffer bitmap is not supported while
  *      HDR is active (the surface is FP16, the bitmap says otherwise).
  */
@@ -76,6 +78,8 @@ typedef struct ICBM_HDR
    int w, h;
    int write_idx;     /* target D3D9 draws into */
    int pending_idx;   /* finished frame not yet presented, -1 if none */
+   double last_flip;  /* al_get_time() of the last flip */
+   const char *present_error; /* set by a failed idle present, handled on the next flip */
 
    /* D3D11 side */
    HMODULE d3d11_module, compiler_module;
@@ -580,8 +584,10 @@ static void icbm_hdr_wait9(IDirect3DQuery9 *q)
       SwitchToThread();
 }
 
-/* Present the frame in rt[idx] through D3D11. */
-static bool icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int idx)
+/* Present the frame in rt[idx] through D3D11. Returns NULL, or why it failed
+ * (the caller falls back to SDR: only the drawing thread may do that).
+ */
+static const char *icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int idx)
 {
    ID3D11DeviceContext *ctx = hdr->ctx;
 
@@ -589,10 +595,8 @@ static bool icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int i
       ctx->ClearState();
       ctx->Flush();
       ICBM_RELEASE(hdr->rtv);
-      if (FAILED(hdr->sc->ResizeBuffers(0, hdr->w, hdr->h, DXGI_FORMAT_UNKNOWN, 0))) {
-         icbm_hdr_fall_back(d, "ResizeBuffers failed");
-         return false;
-      }
+      if (FAILED(hdr->sc->ResizeBuffers(0, hdr->w, hdr->h, DXGI_FORMAT_UNKNOWN, 0)))
+         return "ResizeBuffers failed";
       hdr->sc_w = hdr->w;
       hdr->sc_h = hdr->h;
    }
@@ -601,8 +605,7 @@ static bool icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int i
       if (FAILED(hdr->sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&bb)) ||
           FAILED(hdr->dev->CreateRenderTargetView(bb, NULL, &hdr->rtv))) {
          ICBM_RELEASE(bb);
-         icbm_hdr_fall_back(d, "swap chain buffer unusable");
-         return false;
+         return "swap chain buffer unusable";
       }
       bb->Release();
    }
@@ -610,10 +613,8 @@ static bool icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int i
       ICBM_RELEASE(hdr->srv[idx]);
       ICBM_RELEASE(hdr->tex[idx]);
       if (FAILED(hdr->dev->OpenSharedResource(hdr->share[idx], __uuidof(ID3D11Texture2D), (void **)&hdr->tex[idx])) ||
-          FAILED(hdr->dev->CreateShaderResourceView(hdr->tex[idx], NULL, &hdr->srv[idx]))) {
-         icbm_hdr_fall_back(d, "OpenSharedResource failed");
-         return false;
-      }
+          FAILED(hdr->dev->CreateShaderResourceView(hdr->tex[idx], NULL, &hdr->srv[idx])))
+         return "OpenSharedResource failed";
       hdr->opened[idx] = hdr->share[idx];
    }
    if (hdr->levels_dirty) {
@@ -639,36 +640,45 @@ static bool icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, int i
    hdr->q11_pending[idx] = true;
 
    HRESULT hr = hdr->sc->Present(d->vsync ? 1 : 0, 0);
-   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-      icbm_hdr_fall_back(d, "D3D11 device removed");
-      return false;
-   }
-   return true;
+   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+      return "D3D11 device removed";
+   return NULL;
 }
 
-/* Replaces IDirect3DDevice9::Present in d3d_flip_display (after EndScene).
- * Returns false if HDR is not active: Allegro then presents as usual.
+/* Replaces IDirect3DDevice9::Present in d3d_flip_display (after EndScene,
+ * present_mutex held). Returns false if HDR is not active: Allegro then
+ * presents as usual.
  */
 static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
 {
    ICBM_HDR *hdr = icbm_hdr(d);
+   const char *error;
    int w, next;
 
    if (!hdr || !hdr->active || !hdr->rt[0])
       return false;
+   if (hdr->present_error) {
+      icbm_hdr_fall_back(d, hdr->present_error);
+      return false;
+   }
 
    /* Frame in rt[w] is complete once this query is signalled. */
    w = hdr->write_idx;
    hdr->q9[w]->Issue(D3DISSUE_END);
    hdr->q9[w]->GetData(NULL, 0, D3DGETDATA_FLUSH);
 
-   /* Show the previous frame (finished by now, or nearly). */
+   /* Show the previous frame (finished by now, or nearly), unless
+    * icbm_hdr_idle already did.
+    */
    if (hdr->pending_idx >= 0) {
       icbm_hdr_wait9(hdr->q9[hdr->pending_idx]);
-      if (!icbm_hdr_present_target(d, hdr, hdr->pending_idx))
+      if ((error = icbm_hdr_present_target(d, hdr, hdr->pending_idx)) != NULL) {
+         icbm_hdr_fall_back(d, error);
          return false;
+      }
    }
    hdr->pending_idx = w;
+   hdr->last_flip = al_get_time();
 
    /* Draw the next frame into the target D3D11 read one flip ago. */
    next = (w + 1) % ICBM_HDR_BUFFERS;
@@ -680,6 +690,32 @@ static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
    hdr->write_idx = next;
    icbm_hdr_set_backbuffer(d, hdr->rt[next]);
    return true;
+}
+
+/* Display thread, every pass of its loop (at least every millisecond): a
+ * frame is shown one flip late, so when no flip follows (a loading screen
+ * drawn once before a long load) present the waiting frame anyway.
+ */
+#define ICBM_HDR_IDLE_PRESENT 0.05 /* seconds without a flip */
+
+static void icbm_hdr_idle(ALLEGRO_DISPLAY_D3D *d)
+{
+   ICBM_HDR *hdr = icbm_hdr(d);
+   const char *error;
+
+   if (!hdr || !hdr->active || hdr->pending_idx < 0 || hdr->present_error ||
+       al_get_time() - hdr->last_flip < ICBM_HDR_IDLE_PRESENT)
+      return;
+
+   al_lock_mutex(present_mutex);
+   if (hdr->active && hdr->pending_idx >= 0 && !hdr->present_error &&
+       hdr->q9[hdr->pending_idx]->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_OK) {
+      if ((error = icbm_hdr_present_target(d, hdr, hdr->pending_idx)) != NULL)
+         hdr->present_error = error;
+      else
+         hdr->pending_idx = -1;
+   }
+   al_unlock_mutex(present_mutex);
 }
 
 

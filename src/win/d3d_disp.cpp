@@ -1541,6 +1541,8 @@ static void *d3d_display_thread_proc(void *arg)
          continue;
       }
 
+      icbm_hdr_idle(d3d_display); /* ICBM: show the last frame if no flip follows */
+
       if (d3d_display->device_lost) {
          hr = d3d_display->device->TestCooperativeLevel();
 
