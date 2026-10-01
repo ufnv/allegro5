@@ -149,6 +149,7 @@ AL_FUNC(void, _al_win_wnd_schedule_proc, (HWND wnd, void (*proc)(void*), void *p
 AL_FUNC(void, _al_win_wnd_call_proc, (HWND wnd, void (*proc)(void*), void *param));
 
 int _al_win_determine_adapter(void);
+void _al_d3d_icbm_window_message(ALLEGRO_DISPLAY *display, UINT message); /* ICBM: d3d_hdr_icbm.inc */
 
 extern bool _al_win_disable_screensaver;
 

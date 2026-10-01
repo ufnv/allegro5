@@ -476,6 +476,10 @@ static LRESULT CALLBACK window_callback(HWND hWnd, UINT message,
    if (i == system->displays._size)
       return DefWindowProc(hWnd,message,wParam,lParam);
 
+#ifdef ALLEGRO_CFG_D3D /* ICBM */
+   _al_d3d_icbm_window_message(d, message); /* ICBM: HDR follows display changes and window moves */
+#endif /* ICBM */
+
    if (message == _al_win_msg_suicide) {
       break_window_message_pump(win_display, hWnd);
       if (_al_win_unregister_touch_window)
