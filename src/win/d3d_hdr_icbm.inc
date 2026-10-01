@@ -14,8 +14,9 @@
  *    so a value of max_nits / sdr_white_nits reaches the display's peak.
  *
  *    - al_set_new_display_hdr() before al_create_display() requests it.
- *      ALLEGRO_HDR_AUTO means scRGB if Windows HDR is on for the monitor of
- *      the display's adapter, otherwise nothing changes (plain Direct3D 9).
+ *      ALLEGRO_HDR_AUTO means scRGB if Windows HDR is on for any monitor
+ *      (the window may start on an SDR monitor and be moved to the HDR one;
+ *      the output is SDR there), otherwise nothing changes (plain Direct3D 9).
  *      Sharing surfaces needs a Direct3D 9Ex device: the IDirect3D9 object is
  *      replaced by an IDirect3D9Ex one if no display exists yet. D3D9Ex has
  *      no D3DPOOL_MANAGED, so Allegro's managed buffers/textures use
@@ -238,6 +239,34 @@ static bool icbm_hdr_query_monitor(HMONITOR monitor, ICBM_HDR_MONITOR *out)
    return found;
 }
 
+/* Is Windows HDR on for any monitor of the desktop. */
+static bool icbm_hdr_any_monitor_hdr(void)
+{
+   IDXGIFactory1 *factory = icbm_hdr_create_factory();
+   IDXGIAdapter1 *adapter = NULL;
+   bool found = false;
+
+   if (!factory)
+      return false;
+
+   for (UINT a = 0; !found && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; a++) {
+      IDXGIOutput *output = NULL;
+      for (UINT o = 0; !found && adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; o++) {
+         IDXGIOutput6 *output6 = NULL;
+         DXGI_OUTPUT_DESC1 desc;
+         if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), (void **)&output6)) &&
+             SUCCEEDED(output6->GetDesc1(&desc)) && desc.AttachedToDesktop &&
+             desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+            found = true;
+         ICBM_RELEASE(output6);
+         ICBM_RELEASE(output);
+      }
+      ICBM_RELEASE(adapter);
+   }
+   factory->Release();
+   return found;
+}
+
 
 /* ---- D3D9Ex and the managed pool ---------------------------------- */
 
@@ -257,7 +286,7 @@ extern "C" DWORD _al_d3d_icbm_managed_texture_usage(void)
 static bool d3d_init_display();
 
 /* Called before a display is created: decide the HDR mode (ALLEGRO_HDR_AUTO:
- * only if Windows HDR is on for the adapter's monitor) and switch to
+ * only if Windows HDR is on for any monitor) and switch to
  * IDirect3D9Ex for it if nothing uses the plain IDirect3D9 object yet.
  */
 static void icbm_hdr_prepare_d3d(void)
@@ -275,13 +304,9 @@ static void icbm_hdr_prepare_d3d(void)
    }
 
    if (icbm_hdr_create_mode == ALLEGRO_HDR_AUTO) {
-      ICBM_HDR_MONITOR monitor;
-      int adapter = _al_win_determine_adapter();
-      HMONITOR hmonitor = _al_d3d->GetAdapterMonitor(adapter < 0 ? 0 : adapter);
-      icbm_hdr_query_monitor(hmonitor, &monitor);
-      icbm_hdr_create_mode = monitor.hdr ? ALLEGRO_HDR_SCRGB : ALLEGRO_HDR_OFF;
-      ALLEGRO_INFO("HDR auto: Windows HDR is %s for the monitor of adapter %d\n",
-         monitor.hdr ? "on" : "off", adapter);
+      bool any = icbm_hdr_any_monitor_hdr();
+      icbm_hdr_create_mode = any ? ALLEGRO_HDR_SCRGB : ALLEGRO_HDR_OFF;
+      ALLEGRO_INFO("HDR auto: Windows HDR is %s for any monitor\n", any ? "on" : "off");
       if (icbm_hdr_create_mode == ALLEGRO_HDR_OFF)
          return;
    }
@@ -995,7 +1020,7 @@ static ALLEGRO_DISPLAY_D3D *icbm_hdr_d3d_display(ALLEGRO_DISPLAY *display)
 
 /* Function: al_set_new_display_hdr
  * ALLEGRO_HDR_OFF, ALLEGRO_HDR_SCRGB, ALLEGRO_HDR_HDR10 or ALLEGRO_HDR_AUTO
- * (scRGB if Windows HDR is on for the monitor of the display's adapter,
+ * (scRGB if Windows HDR is on for any monitor,
  * otherwise as ALLEGRO_HDR_OFF) for displays created after this call
  * (Direct3D only).
  */
