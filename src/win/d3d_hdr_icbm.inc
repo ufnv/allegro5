@@ -80,9 +80,11 @@ typedef struct ICBM_HDR_CONSTANTS
 /* What the monitor showing the window can do (icbm_hdr_query_monitor). */
 typedef struct ICBM_HDR_MONITOR
 {
+   HMONITOR monitor;
    bool hdr;         /* Windows HDR is on for it */
    float sdr_white;  /* nits */
    float max_nits;
+   bool max_reported;  /* max_nits is the monitor's own, not the 1000 guess */
 } ICBM_HDR_MONITOR;
 
 typedef struct ICBM_HDR
@@ -204,9 +206,11 @@ static bool icbm_hdr_query_monitor(HMONITOR monitor, ICBM_HDR_MONITOR *out)
    IDXGIAdapter1 *adapter = NULL;
    bool found = false;
 
+   out->monitor = monitor;
    out->hdr = false;
    out->sdr_white = 0.0f;
    out->max_nits = 0.0f;
+   out->max_reported = false;
    if (!factory || !monitor) {
       ICBM_RELEASE(factory);
       return false;
@@ -227,7 +231,8 @@ static bool icbm_hdr_query_monitor(HMONITOR monitor, ICBM_HDR_MONITOR *out)
              * The game can override it with al_set_display_hdr_levels().
              */
             out->max_nits = desc.MaxLuminance;
-            if (out->max_nits <= out->sdr_white || out->max_nits > 4000.0f)
+            out->max_reported = out->max_nits > out->sdr_white && out->max_nits <= 4000.0f;
+            if (!out->max_reported)
                out->max_nits = 1000.0f;
          }
          ICBM_RELEASE(output6);
@@ -985,7 +990,18 @@ static void icbm_hdr_idle(ALLEGRO_DISPLAY_D3D *d)
       if (icbm_hdr_query_monitor(MonitorFromWindow(d->win_display.window, MONITOR_DEFAULTTONEAREST), &monitor)) {
          if (monitor.hdr != hdr->output_hdr)
             ALLEGRO_INFO("HDR: Windows HDR is now %s for the monitor showing the window\n", monitor.hdr ? "on" : "off");
-         if (monitor.sdr_white != hdr->output.sdr_white || monitor.max_nits != hdr->output.max_nits) {
+         /* The peak a monitor reports changes when it dims or turns off
+          * (laptop panels: 1688, then the 1000 guess, then 1688 again):
+          * keep the first one for the monitor while HDR stays on, unless
+          * that was the guess.
+          */
+         if (monitor.hdr && hdr->output.hdr && monitor.monitor == hdr->output.monitor &&
+             (hdr->output.max_reported || !monitor.max_reported)) {
+            monitor.max_nits = hdr->output.max_nits;
+            monitor.max_reported = hdr->output.max_reported;
+         }
+         if (monitor.monitor != hdr->output.monitor || monitor.hdr != hdr->output.hdr ||
+             monitor.sdr_white != hdr->output.sdr_white || monitor.max_nits != hdr->output.max_nits) {
             al_lock_mutex(present_mutex);
             hdr->output = monitor;
             icbm_hdr_update_levels(hdr);
