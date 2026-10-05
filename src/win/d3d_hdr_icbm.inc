@@ -34,10 +34,12 @@
  *      is scRGB 1.0 and nothing goes above it, so the levels report no
  *      headroom. The next flip switches.
  *    - Three render targets rotate, so that neither device waits for the
- *      other: D3D9 draws frame N while D3D11 presents frame N-1. This adds one
- *      frame of latency; if no flip follows within 50 ms, the display thread
- *      presents the waiting frame (icbm_hdr_idle), so a screen drawn once
- *      before a long load still appears.
+ *      other: D3D9 draws frame N while the earlier ones are presented. A
+ *      flipped frame is queued and presented as soon as the GPU has finished
+ *      it: by the flip itself if it is done by then, otherwise by the display
+ *      thread (icbm_hdr_idle, every millisecond), so the game does not wait
+ *      for the GPU at the flip. It waits only when it is two frames ahead,
+ *      for the target it is to draw into next.
  *    - Locking or drawing from the backbuffer bitmap is not supported while
  *      HDR is active (the surface is FP16, the bitmap says otherwise).
  */
@@ -56,7 +58,6 @@
 #endif
 
 #define ICBM_HDR_BUFFERS 3
-#define ICBM_HDR_IDLE_PRESENT 0.05  /* seconds without a flip */
 #define ICBM_HDR_RECHECK      1.0   /* check again this long after a change notification */
 #define ICBM_HDR_CHECK_PERIOD 5.0   /* safety check without notification (SDR brightness slider) */
 
@@ -114,8 +115,8 @@ typedef struct ICBM_HDR
    IDirect3DQuery9 *q9[ICBM_HDR_BUFFERS];
    int w, h;
    int write_idx;     /* target D3D9 draws into */
-   int pending_idx;   /* finished frame not yet presented, -1 if none */
-   double last_flip;  /* al_get_time() of the last flip */
+   int queue[ICBM_HDR_BUFFERS];  /* flipped frames not presented yet, oldest first */
+   int queued;
    const char *present_error; /* set by a failed idle present, handled on the next flip */
 
    /* D3D11 side */
@@ -389,7 +390,7 @@ static void icbm_hdr_release_targets(ICBM_HDR *hdr)
       hdr->share[i] = NULL;
    }
    hdr->w = hdr->h = 0;
-   hdr->pending_idx = -1;
+   hdr->queued = 0;
 }
 
 /* The swap chain only; the D3D11 device stays for a later resume. */
@@ -453,7 +454,7 @@ static bool icbm_hdr_create_targets(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, IDire
    hdr->w = desc.Width;
    hdr->h = desc.Height;
    hdr->write_idx = 0;
-   hdr->pending_idx = -1;
+   hdr->queued = 0;
    return true;
 }
 
@@ -494,7 +495,6 @@ static void icbm_hdr_backbuffer_acquired(ALLEGRO_DISPLAY_D3D *d)
       hdr = (ICBM_HDR *)al_calloc(1, sizeof *hdr);
       hdr->mode = icbm_hdr_create_mode == ALLEGRO_HDR_HDR10 ? ALLEGRO_HDR_HDR10 : ALLEGRO_HDR_SCRGB;
       hdr->enabled = true;
-      hdr->pending_idx = -1;
       d->icbm_hdr = hdr;
       if (!icbm_d3d9ex) {
          ALLEGRO_WARN("HDR off: no Direct3D 9Ex\n");
@@ -828,7 +828,6 @@ static void icbm_hdr_display_created(ALLEGRO_DISPLAY_D3D *d)
 
    hdr->real_bb = bb;
    icbm_hdr_set_backbuffer(d, hdr->rt[hdr->write_idx]);
-   hdr->last_flip = al_get_time();
    hdr->active = true;
    ALLEGRO_INFO("HDR path on (%s)\n", hdr->mode == ALLEGRO_HDR_HDR10 ? "HDR10" : "scRGB");
    icbm_hdr_set_shown(hdr, hdr->shown);
@@ -902,6 +901,44 @@ static const char *icbm_hdr_present_target(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr
    return NULL;
 }
 
+/* Present the newest queued frame the GPU has finished, and drop the older
+ * finished ones: showing them now would only be a moment (present_mutex
+ * held). wait_oldest: wait for the oldest queued frame first, so at least it
+ * goes. The GPU finishes the frames in order. Returns NULL, or why presenting
+ * failed.
+ */
+static const char *icbm_hdr_present_ready(ALLEGRO_DISPLAY_D3D *d, ICBM_HDR *hdr, bool wait_oldest)
+{
+   const char *error;
+   int done = 0;
+
+   if (wait_oldest && hdr->queued > 0) {
+      icbm_hdr_wait9(hdr->q9[hdr->queue[0]]);
+      done = 1;
+   }
+   /* flushed when issued, so no flush here (the display thread polls this) */
+   while (done < hdr->queued && hdr->q9[hdr->queue[done]]->GetData(NULL, 0, 0) == S_OK)
+      done++;
+
+   if (done == 0)
+      return NULL;
+
+   error = icbm_hdr_present_target(d, hdr, hdr->queue[done - 1]);
+
+   for (int i = done; i < hdr->queued; i++)
+      hdr->queue[i - done] = hdr->queue[i];
+   hdr->queued -= done;
+   return error;
+}
+
+static bool icbm_hdr_queued(const ICBM_HDR *hdr, int idx)
+{
+   for (int i = 0; i < hdr->queued; i++)
+      if (hdr->queue[i] == idx)
+         return true;
+   return false;
+}
+
 /* Replaces IDirect3DDevice9::Present in d3d_flip_display (after EndScene,
  * present_mutex held). Switches the output between HDR and SDR when the
  * monitor or al_set_display_hdr_enabled() asks for it. Returns false if the
@@ -929,22 +966,28 @@ static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
    w = hdr->write_idx;
    hdr->q9[w]->Issue(D3DISSUE_END);
    hdr->q9[w]->GetData(NULL, 0, D3DGETDATA_FLUSH);
+   hdr->queue[hdr->queued++] = w;
 
-   /* Show the previous frame (finished by now, or nearly), unless
-    * icbm_hdr_idle already did.
+   /* Show what the GPU has finished (usually the previous frame); the rest
+    * the display thread presents as soon as it is finished.
     */
-   if (hdr->pending_idx >= 0) {
-      icbm_hdr_wait9(hdr->q9[hdr->pending_idx]);
-      if ((error = icbm_hdr_present_target(d, hdr, hdr->pending_idx)) != NULL) {
+   if ((error = icbm_hdr_present_ready(d, hdr, false)) != NULL) {
+      icbm_hdr_fall_back(d, error);
+      return false;
+   }
+
+   /* The next target must not be waiting to be presented: only when the
+    * game is two frames ahead of the GPU, wait for it here ...
+    */
+   next = (w + 1) % ICBM_HDR_BUFFERS;
+   while (icbm_hdr_queued(hdr, next)) {
+      if ((error = icbm_hdr_present_ready(d, hdr, true)) != NULL) {
          icbm_hdr_fall_back(d, error);
          return false;
       }
    }
-   hdr->pending_idx = w;
-   hdr->last_flip = al_get_time();
 
-   /* Draw the next frame into the target D3D11 read one flip ago. */
-   next = (w + 1) % ICBM_HDR_BUFFERS;
+   /* ... nor be read by D3D11 still. */
    if (hdr->q11_pending[next]) {
       while (hdr->ctx->GetData(hdr->q11[next], NULL, 0, 0) == S_FALSE)
          SwitchToThread();
@@ -961,8 +1004,9 @@ static bool icbm_hdr_flip(ALLEGRO_DISPLAY_D3D *d)
  *   (_al_d3d_icbm_window_message) right away and once more a second later,
  *   otherwise every 5 seconds (the SDR brightness slider sends nothing);
  *   the next flip acts on it;
- * - a frame is shown one flip late, so when no flip follows (a loading
- *   screen drawn once before a long load) present the waiting frame anyway.
+ * - present the queued frames as soon as the GPU has finished them, so the
+ *   game does not wait for that at the flip (also a screen drawn once before
+ *   a long load appears).
  */
 static void icbm_hdr_idle(ALLEGRO_DISPLAY_D3D *d)
 {
@@ -1011,16 +1055,13 @@ static void icbm_hdr_idle(ALLEGRO_DISPLAY_D3D *d)
       }
    }
 
-   if (hdr->pending_idx < 0 || hdr->present_error || now - hdr->last_flip < ICBM_HDR_IDLE_PRESENT)
+   if (hdr->queued == 0 || hdr->present_error)  /* a hint only, checked again under the lock */
       return;
 
    al_lock_mutex(present_mutex);
-   if (hdr->active && hdr->pending_idx >= 0 && !hdr->present_error &&
-       hdr->q9[hdr->pending_idx]->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_OK) {
-      if ((error = icbm_hdr_present_target(d, hdr, hdr->pending_idx)) != NULL)
+   if (hdr->active && hdr->queued > 0 && !hdr->present_error) {
+      if ((error = icbm_hdr_present_ready(d, hdr, false)) != NULL)
          hdr->present_error = error;
-      else
-         hdr->pending_idx = -1;
    }
    al_unlock_mutex(present_mutex);
 }
