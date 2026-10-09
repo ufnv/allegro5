@@ -2946,6 +2946,7 @@ int n, r, l;
    if (_AL_BSTR_OK != _al_balloc (b, n + 2)) return _AL_BSTR_ERR;
 
    exvsnprintf (r, (char *) b->data + b->slen, count + 2, fmt, arg);
+   b->data[b->slen + count + 1] = '\0'; /* ICBM: MSVC _vsnprintf does not terminate on overflow, strlen below would read past the buffer */
 
    /* Did the operation complete successfully within bounds? */
 
