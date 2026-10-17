@@ -103,6 +103,8 @@ ALLEGRO_PRIM_FUNC(void, al_destroy_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buf
 ALLEGRO_PRIM_FUNC(void*, al_lock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, int offset, int length, int flags, bool is_opengl));
 ALLEGRO_PRIM_FUNC(void, al_unlock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
 ALLEGRO_PRIM_FUNC(void, al_destroy_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
+/* ICBM: al_draw_indexed_prim with the vertices used known (0 .. num_vertices - 1): no scan of the indices for them */
+ALLEGRO_PRIM_FUNC(int, al_draw_indexed_prim_range, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, const int* indices, int num_vtx, int type, int num_vertices));
 
 /*
 * Utilities for high level primitives.

@@ -9,8 +9,9 @@
  *    - Message pump for the display thread that handles every pending
  *      message and then sleeps until the next one (at most 1 ms), instead of
  *      handling one message per al_rest(0.001).
- *    - The index range of an indexed draw (draw_prim_common) found four
- *      indices at a time, without a branch per index.
+ *    - The index range of an indexed draw (draw_prim_common): the one the
+ *      caller gave (al_draw_indexed_prim_range), else found four indices at
+ *      a time, without a branch per index.
  */
 
 
@@ -61,6 +62,15 @@ static bool icbm_d3d_pump_messages(MSG *msg)
 
 static void icbm_index_range(const int *indices, int num, int *min_idx, int *max_idx)
 {
+   /* al_draw_indexed_prim_range: the caller knows them (src/primitives_icbm.inc) */
+   int count = _al_icbm_get_indexed_vertex_count();
+
+   if (count > 0) {
+      *min_idx = 0;
+      *max_idx = count - 1;
+      return;
+   }
+
    int lo = indices[0];
    int hi = indices[0];
    int i = 0;

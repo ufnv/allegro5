@@ -47,6 +47,8 @@ struct ALLEGRO_INDEX_BUFFER {
 */
 AL_FUNC(int, _al_draw_prim, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, int start, int end, int type));
 AL_FUNC(int, _al_draw_indexed_prim, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, const int* indices, int num_vtx, int type));
+AL_FUNC(void, _al_icbm_set_indexed_vertex_count, (int count)); /* ICBM: src/primitives_icbm.inc */
+AL_FUNC(int, _al_icbm_get_indexed_vertex_count, (void)); /* ICBM */
 AL_FUNC(int, _al_draw_vertex_buffer, (ALLEGRO_VERTEX_BUFFER* vertex_buffer, ALLEGRO_BITMAP* texture, int start, int end, int type));
 AL_FUNC(int, _al_draw_indexed_buffer, (ALLEGRO_VERTEX_BUFFER* vertex_buffer, ALLEGRO_BITMAP* texture, ALLEGRO_INDEX_BUFFER* index_buffer, int start, int end, int type));
 

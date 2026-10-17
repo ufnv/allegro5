@@ -179,4 +179,22 @@ void al_destroy_index_buffer_TS(ALLEGRO_INDEX_BUFFER *buffer, bool is_opengl)
    al_free(buffer);
 }
 
+/* Function: al_draw_indexed_prim_range
+ *
+ * al_draw_indexed_prim for indices that all lie in vertices 0 .. num_vertices
+ * - 1 (ICBM's vertex batches: FinishVertexDrawing): Direct3D is given that
+ * range instead of the one found by scanning all the indices.
+ */
+int al_draw_indexed_prim_range(const void* vtxs, const ALLEGRO_VERTEX_DECL* decl,
+   ALLEGRO_BITMAP* texture, const int* indices, int num_vtx, int type, int num_vertices)
+{
+   int ret;
+
+   _al_icbm_set_indexed_vertex_count(num_vertices);
+   ret = al_draw_indexed_prim(vtxs, decl, texture, indices, num_vtx, type);
+   _al_icbm_set_indexed_vertex_count(-1);
+
+   return ret;
+}
+
 /* vim: set sts=3 sw=3 et: */

@@ -475,4 +475,6 @@ int _al_get_index_buffer_size(ALLEGRO_INDEX_BUFFER* buffer)
    return buffer->common.size;
 }
 
+#include "primitives_icbm.inc" /* ICBM */
+
 /* vim: set sts=3 sw=3 et: */
