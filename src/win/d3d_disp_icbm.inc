@@ -9,6 +9,8 @@
  *    - Message pump for the display thread that handles every pending
  *      message and then sleeps until the next one (at most 1 ms), instead of
  *      handling one message per al_rest(0.001).
+ *    - The index range of an indexed draw (draw_prim_common) found four
+ *      indices at a time, without a branch per index.
  */
 
 
@@ -45,3 +47,54 @@ static bool icbm_d3d_pump_messages(MSG *msg)
 }
 
 /* vim: set sts=3 sw=3 et: */
+
+
+/* The lowest and the highest of the num (> 0) indices: the vertex range
+ * DrawIndexedPrimitiveUP is given. Every al_draw_indexed_prim scans all its
+ * indices for it; upstream's loop branched on each one (a few % of the
+ * game's main thread with its big vertex batches). The same result.
+ */
+#if defined(_M_X64) || defined(__SSE2__) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+   #include <emmintrin.h>
+   #define ICBM_INDEX_RANGE_SSE2
+#endif
+
+static void icbm_index_range(const int *indices, int num, int *min_idx, int *max_idx)
+{
+   int lo = indices[0];
+   int hi = indices[0];
+   int i = 0;
+
+#ifdef ICBM_INDEX_RANGE_SSE2
+   if (num >= 8) {
+      __m128i vlo = _mm_loadu_si128((const __m128i *)indices);
+      __m128i vhi = vlo;
+      int l[4], h[4], k;
+
+      for (i = 4; i + 4 <= num; i += 4) {
+         __m128i v = _mm_loadu_si128((const __m128i *)(indices + i));
+         __m128i lt = _mm_cmplt_epi32(v, vlo);
+         __m128i gt = _mm_cmpgt_epi32(v, vhi);
+         vlo = _mm_or_si128(_mm_and_si128(lt, v), _mm_andnot_si128(lt, vlo));
+         vhi = _mm_or_si128(_mm_and_si128(gt, v), _mm_andnot_si128(gt, vhi));
+      }
+
+      _mm_storeu_si128((__m128i *)l, vlo);
+      _mm_storeu_si128((__m128i *)h, vhi);
+
+      for (k = 0; k < 4; k++) {
+         lo = l[k] < lo ? l[k] : lo;
+         hi = h[k] > hi ? h[k] : hi;
+      }
+   }
+#endif
+
+   for (; i < num; i++) {
+      int idx = indices[i];
+      lo = idx < lo ? idx : lo;
+      hi = idx > hi ? idx : hi;
+   }
+
+   *min_idx = lo;
+   *max_idx = hi;
+}

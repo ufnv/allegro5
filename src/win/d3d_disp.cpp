@@ -3225,21 +3225,9 @@ static int draw_prim_common(ALLEGRO_BITMAP* target, ALLEGRO_BITMAP* texture,
    }
 
    int num_idx = num_vtx;
-   if(indices)
+   if(indices && num_vtx > 0)
    {
-      int ii;
-      for(ii = 0; ii < num_vtx; ii++)
-      {
-         int idx = indices[ii];
-         if(ii == 0) {
-            min_idx = idx;
-            max_idx = idx;
-         } else if (idx < min_idx) {
-            min_idx = idx;
-         } else if (idx > max_idx) {
-            max_idx = idx;
-         }
-      }
+      icbm_index_range(indices, num_vtx, &min_idx, &max_idx); /* ICBM: d3d_disp_icbm.inc, no branch per index */
       num_idx = max_idx + 1 - min_idx;
    }
 
