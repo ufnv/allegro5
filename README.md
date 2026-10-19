@@ -12,9 +12,36 @@ release only needs **copy `overlay/` + apply the small `hooks.patch`**.
 - `tools/make_package.py` – regenerates `overlay/` + `hooks.patch` from a git branch.
 - `tools/configure.cmd`, `tools/build.sh` – x64 static MSVC build like ICBM's.
 - `selftest/` – runtime test of every change (Direct3D; see below).
+- `deps/` – the third-party headers and static x64 `/MT` libraries Allegro is
+  built with (zlib, png, jpeg, webp, freetype, ogg, vorbis, theora, FLAC, opus,
+  dumb, physfs). The configure scripts, the self-test and `stage_for_icbm.py`
+  find it next to themselves; staging copies it into `ICBM\allegro5\deps`.
 
 Current state: made against **5.2.11.3** (`9e58c5e03`). The same changes are
-committed topic by topic on branch `icbm` of `../allegro5_latest/allegro5`.
+committed topic by topic on branch `icbm-hdr` of `../allegro5_latest/allegro5`
+(the older branch `icbm` lacks topics 11-14).
+
+## Where it lives
+
+Both are branches of the fork https://github.com/ufnv/allegro5 (`origin`;
+liballeg/allegro5 is `upstream`):
+
+- `icbm-hdr` – Allegro 5.2.11.3 with every topic, what ICBM is built from;
+  checked out in `XCode\allegro5_latest\allegro5`.
+- `icbm-package` – this folder (an orphan branch, a worktree of the same
+  repository at `XCode\allegro5_icbm`). Stored byte for byte (`* -text`).
+
+On another computer:
+
+```bash
+git clone https://github.com/ufnv/allegro5.git allegro5_latest/allegro5
+git -C allegro5_latest/allegro5 switch icbm-hdr
+git -C allegro5_latest/allegro5 worktree add ../../allegro5_icbm icbm-package
+```
+
+Then build and stage as below (needs VS 2026 and the DirectX SDK in
+`C:\dxsdk`). To build ICBM only, copying a staged `ICBM\allegro5` folder is
+enough.
 
 ## Apply to a new Allegro release
 
