@@ -1,0 +1,949 @@
+diff --git a/addons/font/text.c b/addons/font/text.c
+index 64d19c958d9d12106aadd38180a52c164852d253..026041b11f677f2f5d77ae21be11e5de439579a2 100644
+--- a/addons/font/text.c
++++ b/addons/font/text.c
+@@ -107,6 +107,9 @@ void al_draw_text(const ALLEGRO_FONT *font,
+ {
+    ALLEGRO_USTR_INFO info;
+    ASSERT(text);
++   /* ICBM: tolerate a NULL font (fonts are released on D3D device reset). */
++   if (!font)
++      return;
+    al_draw_ustr(font, color, x, y, flags, al_ref_cstr(&info, text));
+ }
+ 
+@@ -131,6 +134,8 @@ void al_draw_justified_ustr(const ALLEGRO_FONT *font,
+    ALLEGRO_TRANSFORM inv;
+ 
+    ASSERT(font);
++   if (!font)
++      return;
+ 
+    /* count words and measure min length (without spaces) */
+    num_words = 0;
+@@ -273,6 +278,8 @@ int al_get_ustr_width(const ALLEGRO_FONT *f, ALLEGRO_USTR const *ustr)
+    ASSERT(f);
+    ASSERT(ustr);
+ 
++   if (!f)
++      return 1;
+    return f->vtable->text_length(f, ustr);
+ }
+ 
+@@ -289,6 +296,8 @@ int al_get_text_width(const ALLEGRO_FONT *f, const char *str)
+ 
+    ustr = al_ref_cstr(&str_info, str);
+ 
++   if (!f)
++      return 1;
+    return f->vtable->text_length(f, ustr);
+ }
+ 
+@@ -309,6 +318,8 @@ int al_get_font_line_height(const ALLEGRO_FONT *f)
+ int al_get_font_ascent(const ALLEGRO_FONT *f)
+ {
+    ASSERT(f);
++   if (!f)
++      return 0;
+    return f->vtable->font_ascent(f);
+ }
+ 
+@@ -319,6 +330,8 @@ int al_get_font_ascent(const ALLEGRO_FONT *f)
+ int al_get_font_descent(const ALLEGRO_FONT *f)
+ {
+    ASSERT(f);
++   if (!f)
++      return 0;
+    return f->vtable->font_descent(f);
+ }
+ 
+@@ -332,6 +345,10 @@ void al_get_ustr_dimensions(const ALLEGRO_FONT *f,
+ {
+    ASSERT(f);
+    ASSERT(ustr);
++   if (!f) {
++      *bbx = *bby = *bbw = *bbh = 0;
++      return;
++   }
+    f->vtable->get_text_dimensions(f, ustr, bbx, bby,
+       bbw, bbh);
+ }
+@@ -348,6 +365,10 @@ void al_get_text_dimensions(const ALLEGRO_FONT *f,
+    ASSERT(f);
+    ASSERT(text);
+ 
++   if (!f) {
++      *bbx = *bby = *bbw = *bbh = 0;
++      return;
++   }
+    f->vtable->get_text_dimensions(f, al_ref_cstr(&info, text), bbx, bby,
+       bbw, bbh);
+ }
+diff --git a/addons/image/allegro5/internal/aintern_image.h b/addons/image/allegro5/internal/aintern_image.h
+index c6045550b6b50a039a876b6f7417a2a7623c43da..9656fe02fefdeae69af3153bcba4c97082160541 100644
+--- a/addons/image/allegro5/internal/aintern_image.h
++++ b/addons/image/allegro5/internal/aintern_image.h
+@@ -76,6 +76,7 @@ ALLEGRO_BITMAP *_al_load_android_bitmap(const char *filename, int flags);
+ ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png, (const char *filename, int flags));
+ ALLEGRO_IIO_FUNC(bool, _al_save_png, (const char *filename, ALLEGRO_BITMAP *bmp));
+ ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png_f, (ALLEGRO_FILE *f, int flags));
++ALLEGRO_IIO_FUNC(ALLEGRO_BITMAP *, _al_load_png_existing_f, (ALLEGRO_FILE *f, ALLEGRO_BITMAP *bmp, int flags, uint8_t *alpha_map)); /* ICBM */
+ ALLEGRO_IIO_FUNC(bool, _al_save_png_f, (ALLEGRO_FILE *f, ALLEGRO_BITMAP *bmp));
+ #endif
+ 
+diff --git a/addons/image/iio.c b/addons/image/iio.c
+index db8b9defc763f1446f18a2f110f48536e81878d7..b8c47ce44ecc263896acbf3041c3a3e45c99bc00 100644
+--- a/addons/image/iio.c
++++ b/addons/image/iio.c
+@@ -79,6 +79,7 @@ bool al_init_image_addon(void)
+    success |= al_register_bitmap_loader(".png", _al_load_png);
+    success |= al_register_bitmap_saver(".png", _al_save_png);
+    success |= al_register_bitmap_loader_f(".png", _al_load_png_f);
++   success |= al_register_bitmap_loader_existing_f(".png", _al_load_png_existing_f); /* ICBM */
+    success |= al_register_bitmap_saver_f(".png", _al_save_png_f);
+ #endif
+ 
+diff --git a/addons/image/png.c b/addons/image/png.c
+index 34fb32ac36c1f18495bfa59f70003c6128c196de..ab464b6d50ab6689da41cc804ccdde2710e46c2d 100644
+--- a/addons/image/png.c
++++ b/addons/image/png.c
+@@ -86,11 +86,15 @@ static int check_if_png(ALLEGRO_FILE *fp)
+ 
+ 
+ 
++/* ICBM: helpers for loading into existing bitmaps / exporting alpha. */
++#include "png_icbm.inc"
++
++
+ /* really_load_png:
+  *  Worker routine, used by load_png and load_memory_png.
+  */
+ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
+-   int flags)
++   int flags, ALLEGRO_BITMAP *existing, uint8_t *alpha_map) /* ICBM: +existing, alpha_map */
+ {
+    ALLEGRO_BITMAP *bmp;
+    png_uint_32 width, height, rowbytes, real_rowbytes;
+@@ -201,7 +205,10 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
+ #endif
+    }
+ 
+-   bmp = al_create_bitmap(width, height);
++   /* ICBM: decode into an existing bitmap if one was given. */
++   if (existing && !icbm_png_fits(existing, width, height))
++      return NULL;
++   bmp = existing ? existing : al_create_bitmap(width, height);
+    if (!bmp) {
+       ALLEGRO_ERROR("al_create_bitmap failed while loading PNG.\n");
+       return NULL;
+@@ -217,16 +224,25 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
+    if (bpp == 8 && (color_type & PNG_COLOR_MASK_PALETTE) &&
+       (flags & ALLEGRO_KEEP_INDEX))
+    {
+-      lock = al_lock_bitmap(bmp, ALLEGRO_PIXEL_FORMAT_SINGLE_CHANNEL_8,
+-         ALLEGRO_LOCK_WRITEONLY);
++      lock = al_lock_bitmap_region(bmp, 0, 0, width, height, /* ICBM: region */
++         ALLEGRO_PIXEL_FORMAT_SINGLE_CHANNEL_8, ALLEGRO_LOCK_WRITEONLY);
+       index_only = true;
+    }
+    else {
+-      lock = al_lock_bitmap(bmp, ALLEGRO_PIXEL_FORMAT_ABGR_8888_LE,
+-         ALLEGRO_LOCK_WRITEONLY);
++      lock = al_lock_bitmap_region(bmp, 0, 0, width, height, /* ICBM: region */
++         ALLEGRO_PIXEL_FORMAT_ABGR_8888_LE, ALLEGRO_LOCK_WRITEONLY);
+       index_only = false;
+    }
+ 
++   /* ICBM: a failed lock used to crash on lock->data. */
++   if (!lock) {
++      ALLEGRO_ERROR("al_lock_bitmap failed while loading PNG.\n");
++      al_free(buf);
++      if (!existing)
++         al_destroy_bitmap(bmp);
++      return NULL;
++   }
++
+    /* Read the image, one line at a time (easier to debug!) */
+    for (pass = 0; pass < number_passes; pass++) {
+       png_uint_32 y;
+@@ -322,6 +338,9 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
+                ALLEGRO_ASSERT(bpp == 8 || bpp == 24 || bpp == 32);
+                break;
+          }
++         /* ICBM: only the last pass holds final pixels (Adam7 interlace). */
++         if (alpha_map && pass == number_passes - 1)
++            icbm_png_store_alpha_row(alpha_map, y, width, dest_row_start, index_only);
+          dest = dest_row_start + lock->pitch;
+       }
+    }
+@@ -339,7 +358,9 @@ static ALLEGRO_BITMAP *really_load_png(png_structp png_ptr, png_infop info_ptr,
+ 
+ /* Load a PNG file from disk, doing colour coversion if required.
+  */
+-ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
++/* ICBM: body shared with _al_load_png_existing_f (png_icbm.inc). */
++static ALLEGRO_BITMAP *load_png_f(ALLEGRO_FILE *fp, int flags,
++   ALLEGRO_BITMAP *existing, uint8_t *alpha_map)
+ {
+    jmp_buf jmpbuf;
+    ALLEGRO_BITMAP *bmp;
+@@ -391,7 +412,7 @@ ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
+    png_set_sig_bytes(png_ptr, PNG_BYTES_TO_CHECK);
+ 
+    /* Really load the image now. */
+-   bmp = really_load_png(png_ptr, info_ptr, flags);
++   bmp = really_load_png(png_ptr, info_ptr, flags, existing, alpha_map);
+ 
+    /* Clean up after the read, and free any memory allocated. */
+    png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp) NULL);
+@@ -403,6 +424,12 @@ ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
+ 
+ 
+ 
++ALLEGRO_BITMAP *_al_load_png_f(ALLEGRO_FILE *fp, int flags)
++{
++   return load_png_f(fp, flags, NULL, NULL);
++}
++
++
+ ALLEGRO_BITMAP *_al_load_png(const char *filename, int flags)
+ {
+    ALLEGRO_FILE *fp;
+diff --git a/addons/primitives/allegro5/allegro_primitives.h b/addons/primitives/allegro5/allegro_primitives.h
+index a67d01008c08342969c79d3b5ef568fa3e9897b1..50392adbe60f8699dbf2fd724ea5ca59e442e696 100644
+--- a/addons/primitives/allegro5/allegro_primitives.h
++++ b/addons/primitives/allegro5/allegro_primitives.h
+@@ -94,6 +94,18 @@ ALLEGRO_PRIM_FUNC(void*, al_lock_index_buffer, (ALLEGRO_INDEX_BUFFER* buffer, in
+ ALLEGRO_PRIM_FUNC(void, al_unlock_index_buffer, (ALLEGRO_INDEX_BUFFER* buffer));
+ ALLEGRO_PRIM_FUNC(int, al_get_index_buffer_size, (ALLEGRO_INDEX_BUFFER* buffer));
+ 
++/*
++ * ICBM: thread-safe buffer access (addons/primitives/primitives_icbm.inc)
++ */
++ALLEGRO_PRIM_FUNC(void*, al_lock_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, int offset, int length, int flags, bool is_opengl));
++ALLEGRO_PRIM_FUNC(void, al_unlock_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, bool is_opengl));
++ALLEGRO_PRIM_FUNC(void, al_destroy_vertex_buffer_TS, (ALLEGRO_VERTEX_BUFFER* buffer, bool is_opengl));
++ALLEGRO_PRIM_FUNC(void*, al_lock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, int offset, int length, int flags, bool is_opengl));
++ALLEGRO_PRIM_FUNC(void, al_unlock_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
++ALLEGRO_PRIM_FUNC(void, al_destroy_index_buffer_TS, (ALLEGRO_INDEX_BUFFER* buffer, bool is_opengl));
++/* ICBM: al_draw_indexed_prim with the vertices used known (0 .. num_vertices - 1): no scan of the indices for them */
++ALLEGRO_PRIM_FUNC(int, al_draw_indexed_prim_range, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, const int* indices, int num_vtx, int type, int num_vertices));
++
+ /*
+ * Utilities for high level primitives.
+ */
+diff --git a/addons/primitives/primitives.c b/addons/primitives/primitives.c
+index 932759fc3a1250f923692f36ff584cb751f3a5ef..3b22aa0573e92e823cf9fb72c09bf1b8e6b4047c 100644
+--- a/addons/primitives/primitives.c
++++ b/addons/primitives/primitives.c
+@@ -44,6 +44,9 @@ ALLEGRO_DEBUG_CHANNEL("primitives")
+ 
+ static bool addon_initialized = false;
+ 
++/* ICBM: thread-safe buffer functions. */
++#include "primitives_icbm.inc"
++
+ /* Function: al_init_primitives_addon
+  */
+ bool al_init_primitives_addon(void)
+@@ -112,6 +115,7 @@ void al_destroy_vertex_decl(ALLEGRO_VERTEX_DECL* decl)
+ ALLEGRO_VERTEX_BUFFER* al_create_vertex_buffer(ALLEGRO_VERTEX_DECL* decl,
+    const void* initial_data, int num_vertices, int flags)
+ {
++   icbm_remember_buffer_backend(); /* ICBM */
+    return _al_create_vertex_buffer(decl, initial_data, num_vertices, flags);
+ }
+ 
+@@ -120,6 +124,7 @@ ALLEGRO_VERTEX_BUFFER* al_create_vertex_buffer(ALLEGRO_VERTEX_DECL* decl,
+ ALLEGRO_INDEX_BUFFER* al_create_index_buffer(int index_size,
+     const void* initial_data, int num_indices, int flags)
+ {
++   icbm_remember_buffer_backend(); /* ICBM */
+    return _al_create_index_buffer(index_size, initial_data, num_indices, flags);
+ }
+ 
+diff --git a/addons/ttf/ttf.c b/addons/ttf/ttf.c
+index c2c894b9aa29aa07f6936b85b402de0d46d955e6..81a1811da52b50c5cf9d3d913b6e7a93838bcf72 100644
+--- a/addons/ttf/ttf.c
++++ b/addons/ttf/ttf.c
+@@ -38,6 +38,9 @@ ALLEGRO_DEBUG_CHANNEL("font")
+ 
+ #define RANGE_SIZE   128
+ 
++/* ICBM: BORDER_SIZE, glyph callback, centered glyphs. */
++#include "ttf_icbm.inc"
++
+ 
+ typedef struct REGION
+ {
+@@ -335,8 +338,8 @@ static unsigned char *alloc_glyph_region(ALLEGRO_TTF_FONT_DATA *data,
+ 
+    /* Copy a displaced pointer for the glyph. */
+    return (unsigned char *)data->page_lr->data
+-      + ((glyph->region.y + 2) - lock_rect.y) * data->page_lr->pitch
+-      + ((glyph->region.x + 2) - lock_rect.x) * sizeof(int32_t);
++      + ((glyph->region.y + BORDER_SIZE) - lock_rect.y) * data->page_lr->pitch
++      + ((glyph->region.x + BORDER_SIZE) - lock_rect.x) * sizeof(int32_t);
+ }
+ 
+ 
+@@ -498,18 +501,18 @@ static void cache_glyph(ALLEGRO_TTF_FONT_DATA *font_data, FT_Face face,
+        glyph->region.x = -1;
+        glyph->region.y = -1;
+        glyph->page_bitmap = NULL;
+-       /* Even though this glyph has no "region", include the 2-pixel border in the size */
+-       glyph->region.w = w + 4;
+-       glyph->region.h = h + 4;
++       /* Even though this glyph has no "region", include the border in the size */
++       glyph->region.w = w + 2 * BORDER_SIZE;
++       glyph->region.h = h + 2 * BORDER_SIZE;
+        ALLEGRO_DEBUG("Glyph %d has zero size. (pixel mode %d)\n", ft_index, face->glyph->bitmap.pixel_mode);
+        return;
+     }
+ 
+-    /* Each glyph has a 2-pixel border all around. Note: The border is kept
++    /* Each glyph has a BORDER_SIZE-pixel border all around. Note: The border is kept
+      * even against the outer bitmap edge, to ensure consistent rendering.
+      */
+     glyph_data = alloc_glyph_region(font_data, ft_index,
+-       w + 4, h + 4, false, glyph, lock_whole_page);
++       w + 2 * BORDER_SIZE, h + 2 * BORDER_SIZE, false, glyph, lock_whole_page);
+ 
+     if (glyph_data == NULL) {
+        return;
+@@ -583,17 +586,17 @@ static bool ttf_get_glyph_worker(ALLEGRO_FONT const *f, int prev_ft_index, int f
+    advance += get_kerning(data, face, prev_ft_index, ft_index);
+ 
+    info->bitmap = glyph->page_bitmap;
+-   /* the adjustments below remove the 2-pixel border from the glyph */
++   /* the adjustments below remove the border from the glyph */
+    if (info->bitmap) {
+-      info->x = glyph->region.x + 2;
+-      info->y = glyph->region.y + 2;
++      info->x = glyph->region.x + BORDER_SIZE;
++      info->y = glyph->region.y + BORDER_SIZE;
+    }
+    else {
+       info->x = -1;
+       info->y = -1;
+    }
+-   info->w = glyph->region.w - 4;
+-   info->h = glyph->region.h - 4;
++   info->w = glyph->region.w - 2 * BORDER_SIZE;
++   info->h = glyph->region.h - 2 * BORDER_SIZE;
+    info->kerning = advance;
+    info->offset_x = glyph->offset_x;
+    info->offset_y = glyph->offset_y;
+@@ -622,17 +625,7 @@ static int render_glyph(ALLEGRO_FONT const *f, ALLEGRO_COLOR color,
+       return 0;
+ 
+    if (glyph.bitmap != NULL) {
+-      /*
+-       * Include 1 pixel of the 2-pixel border when drawing glyph.
+-       * This improves render results when rotating and scaling.
+-       */
+-      al_draw_tinted_bitmap_region(
+-         glyph.bitmap, color,
+-         glyph.x - 1, glyph.y - 1, glyph.w + 2, glyph.h + 2,
+-         xpos + glyph.offset_x + glyph.kerning - 1,
+-         ypos + glyph.offset_y - 1,
+-         0
+-      );
++      icbm_draw_glyph(f, color, &glyph, xpos, ypos); /* ICBM */
+    }
+ 
+    return glyph.advance;
+@@ -706,7 +699,7 @@ static int ttf_char_length(ALLEGRO_FONT const *f, int ch)
+       }
+    }
+    cache_glyph(data, face, ft_index, glyph, false);
+-   result = glyph->region.w - 4;    /* Remove 2-pixel border from width */
++   result = glyph->region.w - 2 * BORDER_SIZE;    /* Remove border from width */
+ 
+    return result;
+ }
+@@ -1116,8 +1109,8 @@ static bool ttf_get_glyph_dimensions(ALLEGRO_FONT const *f,
+    }
+    cache_glyph(data, face, ft_index, glyph, false);
+    *bbx = glyph->offset_x;
+-   *bbw = glyph->region.w - 4;
+-   *bbh = glyph->region.h - 4;
++   *bbw = glyph->region.w - 2 * BORDER_SIZE;
++   *bbh = glyph->region.h - 2 * BORDER_SIZE;
+    *bby = glyph->offset_y;
+ 
+    return true;
+diff --git a/include/allegro5/allegro_direct3d.h b/include/allegro5/allegro_direct3d.h
+index def3230e36cbfb8504147ee85e221ecd1105f17c..533a7fcbfa1da3646e75ccc33197ee1ad813fccf 100644
+--- a/include/allegro5/allegro_direct3d.h
++++ b/include/allegro5/allegro_direct3d.h
+@@ -38,6 +38,13 @@
+  */
+ 
+ AL_FUNC(LPDIRECT3DDEVICE9,  al_get_d3d_device,         (ALLEGRO_DISPLAY *));
++/* ICBM: HDR output (src/win/d3d_hdr_icbm.inc) */
++enum { ALLEGRO_HDR_OFF = 0, ALLEGRO_HDR_SCRGB = 1, ALLEGRO_HDR_HDR10 = 2, ALLEGRO_HDR_AUTO = 3 };
++AL_FUNC(void, al_set_new_display_hdr, (int mode));
++AL_FUNC(int,  al_get_display_hdr, (ALLEGRO_DISPLAY *display));
++AL_FUNC(void, al_set_display_hdr_enabled, (ALLEGRO_DISPLAY *display, bool enabled));
++AL_FUNC(void, al_get_display_hdr_levels, (ALLEGRO_DISPLAY *display, float *sdr_white_nits, float *max_nits));
++AL_FUNC(void, al_set_display_hdr_levels, (ALLEGRO_DISPLAY *display, float sdr_white_nits, float max_nits));
+ AL_FUNC(LPDIRECT3DTEXTURE9, al_get_d3d_system_texture, (ALLEGRO_BITMAP *));
+ AL_FUNC(LPDIRECT3DTEXTURE9, al_get_d3d_video_texture,  (ALLEGRO_BITMAP *));
+ AL_FUNC(bool,               al_have_d3d_non_pow2_texture_support,   (void));
+diff --git a/include/allegro5/bitmap_io.h b/include/allegro5/bitmap_io.h
+index 70ff94cd87bcddac5b7846b21047f9912a3cbeb8..d6ce853b744dfe4dd1c0ce2f3255cfe591789b95 100644
+--- a/include/allegro5/bitmap_io.h
++++ b/include/allegro5/bitmap_io.h
+@@ -22,6 +22,8 @@ typedef ALLEGRO_BITMAP *(*ALLEGRO_IIO_FS_LOADER_FUNCTION)(ALLEGRO_FILE *fp, int
+ typedef bool (*ALLEGRO_IIO_SAVER_FUNCTION)(const char *filename, ALLEGRO_BITMAP *bitmap);
+ typedef bool (*ALLEGRO_IIO_FS_SAVER_FUNCTION)(ALLEGRO_FILE *fp, ALLEGRO_BITMAP *bitmap);
+ typedef bool (*ALLEGRO_IIO_IDENTIFIER_FUNCTION)(ALLEGRO_FILE *f);
++/* ICBM: loader that decodes into an existing bitmap (see src/bitmap_io_icbm.inc) */
++typedef ALLEGRO_BITMAP *(*ALLEGRO_IIO_FS_EXISTING_LOADER_FUNCTION)(ALLEGRO_FILE *fp, ALLEGRO_BITMAP *bitmap, int flags, uint8_t *alpha_map);
+ 
+ AL_FUNC(bool, al_register_bitmap_loader, (const char *ext, ALLEGRO_IIO_LOADER_FUNCTION loader));
+ AL_FUNC(bool, al_register_bitmap_saver, (const char *ext, ALLEGRO_IIO_SAVER_FUNCTION saver));
+@@ -37,6 +39,9 @@ AL_FUNC(bool, al_save_bitmap, (const char *filename, ALLEGRO_BITMAP *bitmap));
+ AL_FUNC(bool, al_save_bitmap_f, (ALLEGRO_FILE *fp, const char *ident, ALLEGRO_BITMAP *bitmap));
+ AL_FUNC(char const *, al_identify_bitmap_f, (ALLEGRO_FILE *fp));
+ AL_FUNC(char const *, al_identify_bitmap, (char const *filename));
++/* ICBM */
++AL_FUNC(bool, al_register_bitmap_loader_existing_f, (const char *ext, ALLEGRO_IIO_FS_EXISTING_LOADER_FUNCTION fs_existing_loader));
++AL_FUNC(ALLEGRO_BITMAP *, al_load_existing_bitmap_flags_f, (ALLEGRO_FILE *fp, ALLEGRO_BITMAP *bitmap, const char *ident, int flags, uint8_t *alpha_map));
+ 
+ #ifdef __cplusplus
+    }
+diff --git a/include/allegro5/blender.h b/include/allegro5/blender.h
+index a36a3a3a0c5832616ca88eceab51c2869dcb42b6..ad74dde9df72cbe91a706451746a2b5f23d3fc3e 100644
+--- a/include/allegro5/blender.h
++++ b/include/allegro5/blender.h
+@@ -30,6 +30,8 @@ enum ALLEGRO_BLEND_OPERATIONS {
+    ALLEGRO_ADD                = 0,
+    ALLEGRO_SRC_MINUS_DEST     = 1,
+    ALLEGRO_DEST_MINUS_SRC     = 2,
++   ALLEGRO_MIN                = 3, /* ICBM */
++   ALLEGRO_MAX                = 4, /* ICBM */
+    ALLEGRO_NUM_BLEND_OPERATIONS
+ };
+ 
+diff --git a/include/allegro5/internal/aintern_blend.h b/include/allegro5/internal/aintern_blend.h
+index 18523929913606f982c33f4d5e749de54be11d6d..a450416e7459f704a7ab47f860596d5e68409eb3 100644
+--- a/include/allegro5/internal/aintern_blend.h
++++ b/include/allegro5/internal/aintern_blend.h
+@@ -17,7 +17,8 @@
+ 
+ #define _AL_DEST_IS_ZERO \
+    (dst_mode == ALLEGRO_ZERO &&  dst_alpha == ALLEGRO_ZERO && \
+-   op != ALLEGRO_DEST_MINUS_SRC && op_alpha != ALLEGRO_DEST_MINUS_SRC)
++   op != ALLEGRO_DEST_MINUS_SRC && op_alpha != ALLEGRO_DEST_MINUS_SRC && \
++   op < ALLEGRO_MIN && op_alpha < ALLEGRO_MIN) /* ICBM: MIN/MAX read dest */
+ 
+ #define _AL_SRC_NOT_MODIFIED \
+    (src_mode == ALLEGRO_ONE && src_alpha == ALLEGRO_ONE)
+@@ -27,6 +28,8 @@
+    tint.r == 1.0f && tint.g == 1.0f && tint.b == 1.0f && tint.a == 1.0f)
+ 
+ 
++#include "allegro5/internal/aintern_blend_icbm.h" /* ICBM */
++
+ #ifndef _AL_NO_BLEND_INLINE_FUNC
+ 
+ /* Only cares about alpha blending modes. */
+@@ -127,6 +130,7 @@ void _al_blend_alpha_inline(
+    #define BLEND(c, src, dst) \
+       result->c = OP(result->c * src, dcol->c * dst);
+    switch (op) {
++      _AL_ICBM_BLEND_MINMAX_RGB_CASES /* ICBM */
+       case ALLEGRO_ADD:
+          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
+          BLEND(r, src, dst)
+@@ -151,6 +155,7 @@ void _al_blend_alpha_inline(
+    }
+ 
+    switch (aop) {
++      _AL_ICBM_BLEND_MINMAX_ALPHA_CASES /* ICBM */
+       case ALLEGRO_ADD:
+          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
+          BLEND(a, asrc, adst)
+@@ -193,6 +198,7 @@ void _al_blend_inline(
+    #define BLEND(c, src, dst) \
+       result->c = OP(result->c * src.c, dcol->c * dst.c);
+    switch (op) {
++      _AL_ICBM_BLEND_MINMAX_RGB_CASES /* ICBM */
+       case ALLEGRO_ADD:
+          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
+          BLEND(r, src, dst)
+@@ -220,6 +226,7 @@ void _al_blend_inline(
+    #define BLEND(c, src, dst) \
+       result->c = OP(result->c * src, dcol->c * dst);
+    switch (aop) {
++      _AL_ICBM_BLEND_MINMAX_ALPHA_CASES /* ICBM */
+       case ALLEGRO_ADD:
+          #define OP(x, y) _ALLEGRO_MIN(1, x + y)
+          BLEND(a, asrc, adst)
+diff --git a/include/allegro5/internal/aintern_direct3d.h b/include/allegro5/internal/aintern_direct3d.h
+index b8493572349e1a1d065e6c15dbee1bef32b5c10f..dcb1e0808a4ba4fb5716e35bfb0aed06e6052b44 100644
+--- a/include/allegro5/internal/aintern_direct3d.h
++++ b/include/allegro5/internal/aintern_direct3d.h
+@@ -81,6 +81,8 @@ typedef struct ALLEGRO_DISPLAY_D3D
+    LPD3DXEFFECT effect;
+ #endif
+    LPDIRECT3DVERTEXSHADER9 primitives_shader;
++
++   void *icbm_hdr; /* ICBM: HDR output state (src/win/d3d_hdr_icbm.inc) */
+ } ALLEGRO_DISPLAY_D3D;
+ 
+ 
+@@ -89,6 +91,9 @@ AL_FUNC(void, _al_set_d3d_sampler_state, (IDirect3DDevice9* device,
+    int sampler, ALLEGRO_BITMAP* bitmap, bool prim_default));
+ 
+ void _al_d3d_destroy_bitmap(ALLEGRO_BITMAP *bitmap);
++/* ICBM: Direct3D 9Ex has no managed pool (src/win/d3d_hdr_icbm.inc). */
++D3DPOOL _al_d3d_icbm_managed_pool(void);
++DWORD _al_d3d_icbm_managed_texture_usage(void);
+ void _al_d3d_update_render_state(ALLEGRO_DISPLAY *display);
+ 
+ bool _al_hlsl_set_projview_matrix(LPD3DXEFFECT effect,
+diff --git a/include/allegro5/internal/aintern_primitives.h b/include/allegro5/internal/aintern_primitives.h
+index fd5b80b7989c5e30f92c2970d43f181fc1414a5c..9a11503143ca64fdd312818a9630dc7ac289de5c 100644
+--- a/include/allegro5/internal/aintern_primitives.h
++++ b/include/allegro5/internal/aintern_primitives.h
+@@ -47,6 +47,8 @@ struct ALLEGRO_INDEX_BUFFER {
+ */
+ AL_FUNC(int, _al_draw_prim, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, int start, int end, int type));
+ AL_FUNC(int, _al_draw_indexed_prim, (const void* vtxs, const ALLEGRO_VERTEX_DECL* decl, ALLEGRO_BITMAP* texture, const int* indices, int num_vtx, int type));
++AL_FUNC(void, _al_icbm_set_indexed_vertex_count, (int count)); /* ICBM: src/primitives_icbm.inc */
++AL_FUNC(int, _al_icbm_get_indexed_vertex_count, (void)); /* ICBM */
+ AL_FUNC(int, _al_draw_vertex_buffer, (ALLEGRO_VERTEX_BUFFER* vertex_buffer, ALLEGRO_BITMAP* texture, int start, int end, int type));
+ AL_FUNC(int, _al_draw_indexed_buffer, (ALLEGRO_VERTEX_BUFFER* vertex_buffer, ALLEGRO_BITMAP* texture, ALLEGRO_INDEX_BUFFER* index_buffer, int start, int end, int type));
+ 
+diff --git a/include/allegro5/platform/aintwin.h b/include/allegro5/platform/aintwin.h
+index 479d6a6d29ba322aac5e8def33ed00799e160666..8733ce6479ef6fa18276ab0b06dceb0be93d3630 100644
+--- a/include/allegro5/platform/aintwin.h
++++ b/include/allegro5/platform/aintwin.h
+@@ -149,6 +149,7 @@ AL_FUNC(void, _al_win_wnd_schedule_proc, (HWND wnd, void (*proc)(void*), void *p
+ AL_FUNC(void, _al_win_wnd_call_proc, (HWND wnd, void (*proc)(void*), void *param));
+ 
+ int _al_win_determine_adapter(void);
++void _al_d3d_icbm_window_message(ALLEGRO_DISPLAY *display, UINT message); /* ICBM: d3d_hdr_icbm.inc */
+ 
+ extern bool _al_win_disable_screensaver;
+ 
+diff --git a/src/bitmap_draw.c b/src/bitmap_draw.c
+index 66cf5e428a23bf212836fda26e97feb76f2824b8..99b408865e4c27b1e5e983e9a4bc9e0afb040f6f 100644
+--- a/src/bitmap_draw.c
++++ b/src/bitmap_draw.c
+@@ -23,6 +23,9 @@
+ 
+ static ALLEGRO_COLOR solid_white = {1, 1, 1, 1};
+ 
++/* ICBM: Z used for rotated/scaled bitmap draws (declared by the game). */
++float ALLEGRO_PRIMITIVE_STD_Z = 0.0f;
++
+ 
+ static void _bitmap_drawer(ALLEGRO_BITMAP *bitmap, ALLEGRO_COLOR tint,
+    float sx, float sy, float sw, float sh, int flags)
+@@ -111,7 +114,7 @@ static void _draw_tinted_rotated_scaled_bitmap_region(ALLEGRO_BITMAP *bitmap,
+    al_translate_transform(&t, -cx, -cy);
+    al_scale_transform(&t, xscale, yscale);
+    al_rotate_transform(&t, angle);
+-   al_translate_transform(&t, dx, dy);
++   al_translate_transform_3d(&t, dx, dy, ALLEGRO_PRIMITIVE_STD_Z); /* ICBM */
+    al_compose_transform(&t, &backup);
+ 
+    al_use_transform(&t);
+diff --git a/src/bitmap_io.c b/src/bitmap_io.c
+index aeefd00a1c5ef4bd2567158ec99dfc681e436ac6..1b507d2406fecc6b574cff8c5aa2d695298a2929 100644
+--- a/src/bitmap_io.c
++++ b/src/bitmap_io.c
+@@ -34,6 +34,7 @@ typedef struct Handler
+    ALLEGRO_IIO_FS_LOADER_FUNCTION fs_loader;
+    ALLEGRO_IIO_FS_SAVER_FUNCTION fs_saver;
+    ALLEGRO_IIO_IDENTIFIER_FUNCTION identifier;
++   ALLEGRO_IIO_FS_EXISTING_LOADER_FUNCTION fs_existing_loader; /* ICBM */
+ } Handler;
+ 
+ 
+@@ -52,6 +53,7 @@ static Handler *add_iio_table_f(const char *ext)
+    ent->fs_loader = NULL;
+    ent->fs_saver = NULL;
+    ent->identifier = NULL;
++   ent->fs_existing_loader = NULL; /* ICBM */
+ 
+    return ent;
+ }
+@@ -316,3 +318,6 @@ char const *al_identify_bitmap(char const *filename)
+ 
+ 
+ /* vim: set sts=3 sw=3 et: */
++
++/* ICBM: existing-bitmap loaders. */
++#include "bitmap_io_icbm.inc"
+diff --git a/src/misc/bstrlib.c b/src/misc/bstrlib.c
+index 4e75b3eda57f14dd56f2002bb2b9e9809ddb6d74..b7e58bf742fe3b34d71a46c6119fda57ab8396f9 100644
+--- a/src/misc/bstrlib.c
++++ b/src/misc/bstrlib.c
+@@ -2946,6 +2946,7 @@ int n, r, l;
+    if (_AL_BSTR_OK != _al_balloc (b, n + 2)) return _AL_BSTR_ERR;
+ 
+    exvsnprintf (r, (char *) b->data + b->slen, count + 2, fmt, arg);
++   b->data[b->slen + count + 1] = '\0'; /* ICBM: MSVC _vsnprintf does not terminate on overflow, strlen below would read past the buffer */
+ 
+    /* Did the operation complete successfully within bounds? */
+ 
+diff --git a/src/opengl/ogl_draw.c b/src/opengl/ogl_draw.c
+index 1b4223871c990617beeb84eb1d3f776908ac6374..c11c41b371f97f30316749a655ef5ef07af53b93 100644
+--- a/src/opengl/ogl_draw.c
++++ b/src/opengl/ogl_draw.c
+@@ -764,8 +764,13 @@ bool _al_opengl_set_blender(ALLEGRO_DISPLAY *ogl_disp)
+       GL_ONE, GL_ONE
+ #endif
+    };
+-   const int blend_equations[3] = {
+-      GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT
++   const int blend_equations[ALLEGRO_NUM_BLEND_OPERATIONS] = {
++      GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT,
++#if defined(GL_MIN) && defined(GL_MAX)
++      GL_MIN, GL_MAX /* ICBM */
++#else
++      GL_FUNC_ADD, GL_FUNC_ADD /* ICBM: no min/max on this GL (ES 2 without EXT_blend_minmax) */
++#endif
+    };
+ 
+    (void)ogl_disp;
+diff --git a/src/primitives.c b/src/primitives.c
+index 81f87e29708ce8e8be209021584eab0d2b4ede8d..7137de9e06b21e6302ce85f785e255301027e5d1 100644
+--- a/src/primitives.c
++++ b/src/primitives.c
+@@ -112,6 +112,7 @@ ALLEGRO_VERTEX_DECL* _al_create_vertex_decl(const ALLEGRO_VERTEX_ELEMENT* elemen
+    if (e->attribute) {
+       if (e->storage != ALLEGRO_PRIM_FLOAT_2 &&
+           e->storage != ALLEGRO_PRIM_FLOAT_3 &&
++          e->storage != ALLEGRO_PRIM_FLOAT_4 && /* ICBM */
+           e->storage != ALLEGRO_PRIM_SHORT_2) {
+          ALLEGRO_WARN("Invalid storage for ALLEGRO_PRIM_POSITION.\n");
+          goto fail;
+@@ -123,6 +124,7 @@ ALLEGRO_VERTEX_DECL* _al_create_vertex_decl(const ALLEGRO_VERTEX_ELEMENT* elemen
+       e = &ret->elements[ALLEGRO_PRIM_TEX_COORD_PIXEL];
+    if (e->attribute) {
+       if (e->storage != ALLEGRO_PRIM_FLOAT_2 &&
++          e->storage != ALLEGRO_PRIM_FLOAT_3 && /* ICBM */
+           e->storage != ALLEGRO_PRIM_SHORT_2) {
+          ALLEGRO_WARN("Invalid storage for %s.\n", ret->elements[ALLEGRO_PRIM_TEX_COORD].attribute ? "ALLEGRO_PRIM_TEX_COORD" : "ALLEGRO_PRIM_TEX_COORD_PIXEL");
+          goto fail;
+@@ -473,4 +475,6 @@ int _al_get_index_buffer_size(ALLEGRO_INDEX_BUFFER* buffer)
+    return buffer->common.size;
+ }
+ 
++#include "primitives_icbm.inc" /* ICBM */
++
+ /* vim: set sts=3 sw=3 et: */
+diff --git a/src/shader.c b/src/shader.c
+index 8311db4c228f90c2b897a4aee2d7812036192184..63a4a7f68e4185352ff0cf487b8d74110acbdf37 100644
+--- a/src/shader.c
++++ b/src/shader.c
+@@ -37,7 +37,7 @@ static ALLEGRO_SHADER_PLATFORM resolve_platform(ALLEGRO_DISPLAY *display,
+          platform = ALLEGRO_SHADER_GLSL;
+       }
+       else {
+-         platform = ALLEGRO_SHADER_HLSL;
++         platform = ALLEGRO_SHADER_HLSL_SM_3_0; /* ICBM: was ALLEGRO_SHADER_HLSL */
+       }
+    }
+    if (platform == ALLEGRO_SHADER_AUTO_MINIMAL) {
+@@ -74,7 +74,9 @@ ALLEGRO_SHADER *al_create_shader(ALLEGRO_SHADER_PLATFORM platform)
+          shader = _al_create_shader_hlsl(platform, 2);
+          break;
+       case ALLEGRO_SHADER_HLSL_SM_3_0:
+-         shader = _al_create_shader_hlsl(platform, 3);
++         /* ICBM: report SM 3.0 shaders as ALLEGRO_SHADER_HLSL, so that
++          * al_get_shader_platform() == ALLEGRO_SHADER_HLSL for AUTO shaders. */
++         shader = _al_create_shader_hlsl(ALLEGRO_SHADER_HLSL, 3);
+          break;
+ #endif
+       case ALLEGRO_SHADER_AUTO:
+diff --git a/src/win/d3d_bmp.cpp b/src/win/d3d_bmp.cpp
+index 6645d9f4486870d2b9565b8c70cf943a4e985d00..f2c494ce1c524b1928593018483d24e479978a2c 100644
+--- a/src/win/d3d_bmp.cpp
++++ b/src/win/d3d_bmp.cpp
+@@ -374,13 +374,13 @@ static bool d3d_create_textures(ALLEGRO_DISPLAY_D3D *disp, int w, int h,
+ 
+    if (_al_d3d_render_to_texture_supported()) {
+       if (video_texture) {
+-         int usage = compressed ? 0 : D3DUSAGE_RENDERTARGET;
++         int usage = compressed ? (int)_al_d3d_icbm_managed_texture_usage() : D3DUSAGE_RENDERTARGET; /* ICBM */
+          /* XXX: Compressed video bitmaps are managed, so in principle
+           * there is no need to manually sync them for device loss.
+           * It is still necessary to do so for resizing purposes,
+           * however... not sure there's any real savings to be had here.
+           */
+-         D3DPOOL pool = compressed ? D3DPOOL_MANAGED : D3DPOOL_DEFAULT;
++         D3DPOOL pool = compressed ? _al_d3d_icbm_managed_pool() : D3DPOOL_DEFAULT; /* ICBM: was D3DPOOL_MANAGED */
+          err = disp->device->CreateTexture(w, h, levels,
+             usage | autogenmipmap,
+             (D3DFORMAT)_al_pixel_format_to_d3d(video_format), pool,
+@@ -410,7 +410,7 @@ static bool d3d_create_textures(ALLEGRO_DISPLAY_D3D *disp, int w, int h,
+    else {
+       if (video_texture) {
+          err = disp->device->CreateTexture(w, h, 1,
+-            0, (D3DFORMAT)_al_pixel_format_to_d3d(video_format), D3DPOOL_MANAGED,
++            _al_d3d_icbm_managed_texture_usage(), (D3DFORMAT)_al_pixel_format_to_d3d(video_format), _al_d3d_icbm_managed_pool(), /* ICBM */
+             video_texture, NULL);
+          if (err != D3D_OK) {
+             ALLEGRO_ERROR("d3d_create_textures: Unable to create video texture (no render-to-texture).\n");
+diff --git a/src/win/d3d_disp.cpp b/src/win/d3d_disp.cpp
+index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..7557d921c5486298890413ec438e27b9aad5e101 100644
+--- a/src/win/d3d_disp.cpp
++++ b/src/win/d3d_disp.cpp
+@@ -66,6 +66,9 @@ static const char* _al_d3d_module_name = "d3d9.dll";
+ 
+ ALLEGRO_DEBUG_CHANNEL("d3d")
+ 
++/* ICBM: device-reset hooks and display-thread message pump. */
++#include "d3d_disp_icbm.inc"
++
+ static ALLEGRO_DISPLAY_INTERFACE *vt = 0;
+ 
+ static HMODULE _al_d3d_module = 0;
+@@ -97,6 +100,9 @@ static bool already_fullscreen = false; /* real fullscreen */
+ static ALLEGRO_MUTEX *present_mutex;
+ ALLEGRO_MUTEX *_al_d3d_lost_device_mutex;
+ 
++/* ICBM: HDR output. */
++#include "d3d_hdr_icbm.inc"
++
+ /*
+  * In the context of this file, legacy cards pretty much refer to older Intel cards.
+  * They are distinguished by three misfeatures:
+@@ -617,6 +623,7 @@ static bool d3d_create_fullscreen_device(ALLEGRO_DISPLAY_D3D *d,
+    }
+ 
+    d->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &d->render_target);
++   icbm_hdr_backbuffer_acquired(d); /* ICBM */
+ 
+    ALLEGRO_INFO("Fullscreen Direct3D device created.\n");
+ 
+@@ -892,6 +899,7 @@ static bool d3d_create_device(ALLEGRO_DISPLAY_D3D *d,
+       ALLEGRO_ERROR("d3d_create_device: GetBackBuffer failed.\n");
+       return 0;
+    }
++   icbm_hdr_backbuffer_acquired(d); /* ICBM */
+ 
+    if (d->device->BeginScene() != D3D_OK) {
+       ALLEGRO_ERROR("BeginScene failed in create_device\n");
+@@ -1009,6 +1017,7 @@ void _al_d3d_prepare_for_reset(ALLEGRO_DISPLAY_D3D *disp)
+    d3d_call_callbacks(&al_display->display_invalidated_callbacks, al_display);
+ 
+    _al_d3d_release_default_pool_textures((ALLEGRO_DISPLAY *)disp);
++   icbm_hdr_backbuffer_release(disp); /* ICBM */
+    while (disp->render_target && disp->render_target->Release() != 0) {
+       ALLEGRO_WARN("_al_d3d_prepare_for_reset: (bb) ref count not 0\n");
+    }
+@@ -1170,6 +1179,7 @@ static bool _al_d3d_reset_device(ALLEGRO_DISPLAY_D3D *d3d_display)
+     }
+ 
+    d3d_display->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &d3d_display->render_target);
++   icbm_hdr_backbuffer_acquired(d3d_display); /* ICBM */
+ 
+    _al_d3d_refresh_texture_memory(al_display);
+ 
+@@ -1524,19 +1534,15 @@ static void *d3d_display_thread_proc(void *arg)
+    SetEvent(params->AckEvent);
+ 
+    while (!win_display->end_thread) {
+-      al_rest(0.001);
+-
+-      if (PeekMessage(&msg, NULL, 0, 0, FALSE)) {
+-         if (GetMessage(&msg, NULL, 0, 0) != 0)
+-            DispatchMessage(&msg);
+-         else
+-            break;                  /* WM_QUIT received or error (GetMessage returned -1)  */
+-      }
++      if (!icbm_d3d_pump_messages(&msg)) /* ICBM: was al_rest(0.001) + one message */
++         break;                  /* WM_QUIT received */
+ 
+       if (!d3d_display->device) {
+          continue;
+       }
+ 
++      icbm_hdr_idle(d3d_display); /* ICBM: show the last frame if no flip follows */
++
+       if (d3d_display->device_lost) {
+          hr = d3d_display->device->TestCooperativeLevel();
+ 
+@@ -1566,6 +1572,7 @@ static void *d3d_display_thread_proc(void *arg)
+             }
+          }
+          else if (hr == D3DERR_DEVICENOTRESET) {
++            ReleaseAllVideoMemoryPossible(); /* ICBM */
+             if (_al_d3d_reset_device(d3d_display)) {
+                d3d_display->device_lost = false;
+                d3d_reset_state(d3d_display);
+@@ -1584,6 +1591,7 @@ static void *d3d_display_thread_proc(void *arg)
+                   (*d3d_restore_callback)(al_display);
+                }
+             }
++            DisplayResetFinished(); /* ICBM */
+          }
+       }
+       if (d3d_display->do_reset) {
+@@ -1596,6 +1604,7 @@ static void *d3d_display_thread_proc(void *arg)
+       }
+    }
+ 
++   icbm_hdr_destroy(d3d_display); /* ICBM */
+    d3d_destroy_device(d3d_display);
+ 
+    if (d3d_display->faux_fullscreen) {
+@@ -1821,7 +1830,7 @@ static ALLEGRO_DISPLAY_D3D *d3d_create_display_internals(
+    if (!check_use_fixed_pipeline(d3d_display->device)) {
+       HRESULT res;
+ 
+-      res = d3d_display->device->CreateIndexBuffer(2 * sizeof(int), 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &d3d_display->loop_index_buffer, 0);
++      res = d3d_display->device->CreateIndexBuffer(2 * sizeof(int), 0, D3DFMT_INDEX32, _al_d3d_icbm_managed_pool(), &d3d_display->loop_index_buffer, 0); /* ICBM: was D3DPOOL_MANAGED */
+       if (res != D3D_OK) {
+          ALLEGRO_WARN("CreateIndexBuffer failed: %ld.\n", res);
+          if (free_on_error) {
+@@ -1928,6 +1937,8 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
+    ALLEGRO_DISPLAY_WIN *win_display;
+    int *s;
+ 
++   icbm_d3d_refresh_object(); /* ICBM */
++   icbm_hdr_prepare_d3d(); /* ICBM */
+    al_lock_mutex(present_mutex);
+    display = d3d_create_display_locked(w, h);
+    win_display = (ALLEGRO_DISPLAY_WIN *)display;
+@@ -1935,7 +1946,9 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
+ 
+    if (!display)
+       return NULL;
++   icbm_d3d_had_display = true; /* ICBM */
+ 
++   icbm_hdr_display_created((ALLEGRO_DISPLAY_D3D *)display); /* ICBM */
+    ASSERT(display->vt);
+ 
+    s = display->extra_settings.settings;
+@@ -1989,7 +2002,9 @@ void _al_d3d_set_blender(ALLEGRO_DISPLAY_D3D *d3d_display)
+    DWORD allegro_to_d3d_blendop[ALLEGRO_NUM_BLEND_OPERATIONS] = {
+       D3DBLENDOP_ADD,
+       D3DBLENDOP_SUBTRACT,
+-      D3DBLENDOP_REVSUBTRACT
++      D3DBLENDOP_REVSUBTRACT,
++      D3DBLENDOP_MIN, /* ICBM */
++      D3DBLENDOP_MAX  /* ICBM */
+    };
+ 
+    blender_changed = false;
+@@ -2153,7 +2168,8 @@ static void d3d_flip_display(ALLEGRO_DISPLAY *al_display)
+ 
+    d3d_display->device->EndScene();
+ 
+-   hr = d3d_display->device->Present(NULL, NULL, win_display->window, NULL);
++   hr = icbm_hdr_flip(d3d_display) ? D3D_OK : /* ICBM: HDR presents through D3D11 */
++      d3d_display->device->Present(NULL, NULL, win_display->window, NULL);
+ 
+    d3d_display->device->BeginScene();
+ 
+@@ -3211,21 +3227,9 @@ static int draw_prim_common(ALLEGRO_BITMAP* target, ALLEGRO_BITMAP* texture,
+    }
+ 
+    int num_idx = num_vtx;
+-   if(indices)
++   if(indices && num_vtx > 0)
+    {
+-      int ii;
+-      for(ii = 0; ii < num_vtx; ii++)
+-      {
+-         int idx = indices[ii];
+-         if(ii == 0) {
+-            min_idx = idx;
+-            max_idx = idx;
+-         } else if (idx < min_idx) {
+-            min_idx = idx;
+-         } else if (idx > max_idx) {
+-            max_idx = idx;
+-         }
+-      }
++      icbm_index_range(indices, num_vtx, &min_idx, &max_idx); /* ICBM: d3d_disp_icbm.inc, no branch per index */
+       num_idx = max_idx + 1 - min_idx;
+    }
+ 
+@@ -3694,7 +3698,7 @@ static bool d3d_create_vertex_buffer(ALLEGRO_VERTEX_BUFFER* buf, const void* ini
+    }
+ 
+    res = device->CreateVertexBuffer(stride * num_vertices, !(flags & ALLEGRO_PRIM_BUFFER_READWRITE) ? D3DUSAGE_WRITEONLY : 0,
+-                                    fvf, D3DPOOL_MANAGED, &d3d_vbuff, 0);
++                                    fvf, _al_d3d_icbm_managed_pool(), &d3d_vbuff, 0); /* ICBM: was D3DPOOL_MANAGED */
+    if (res != D3D_OK) {
+       ALLEGRO_WARN("CreateVertexBuffer failed: %ld.\n", res);
+       return false;
+@@ -3727,7 +3731,7 @@ static bool d3d_create_index_buffer(ALLEGRO_INDEX_BUFFER* buf, const void* initi
+    device = al_get_d3d_device(al_get_current_display());
+ 
+    res = device->CreateIndexBuffer(num_indices * buf->index_size, !(flags & ALLEGRO_PRIM_BUFFER_READWRITE) ? D3DUSAGE_WRITEONLY : 0,
+-                                   buf->index_size == 4 ? D3DFMT_INDEX32 : D3DFMT_INDEX16, D3DPOOL_MANAGED, &d3d_ibuff, 0);
++                                   buf->index_size == 4 ? D3DFMT_INDEX32 : D3DFMT_INDEX16, _al_d3d_icbm_managed_pool(), &d3d_ibuff, 0); /* ICBM: was D3DPOOL_MANAGED */
+    if (res != D3D_OK) {
+       ALLEGRO_WARN("CreateIndexBuffer failed: %ld.\n", res);
+       return false;
+diff --git a/src/win/wkeyboard.c b/src/win/wkeyboard.c
+index b1bff956bc80aa35d6fb615af7f9cd23c79056ab..4dcda51ff312c2b4ef83da1fc8ccb4a3e9381ffc 100644
+--- a/src/win/wkeyboard.c
++++ b/src/win/wkeyboard.c
+@@ -323,6 +323,10 @@ static void update_toggle_modifiers(void)
+ 
+ 
+ 
++/* ICBM: when false, auto-repeated ALLEGRO_EVENT_KEY_CHAR events are not
++ * generated (the game does its own key repeat). */
++bool SEND_REPEAT_EVENTS = true;
++
+ /* _al_win_kbd_handle_key_press:
+  *  Does stuff when a key is pressed.
+  */
+@@ -391,7 +395,7 @@ void _al_win_kbd_handle_key_press(int scode, int vcode, bool extended,
+          update_toggle_modifiers();
+          event.keyboard.modifiers = modifiers;
+          event.keyboard.repeat = actual_repeat;
+-         for (i = 0; i < event_count; i++) {
++         for (i = 0; i < event_count && (SEND_REPEAT_EVENTS || !actual_repeat); i++) { /* ICBM */
+             event.keyboard.unichar = buf[i];
+             _al_event_source_emit_event(&the_keyboard.es, &event);
+          }
+diff --git a/src/win/wsystem.c b/src/win/wsystem.c
+index 3a02c397a62f52fbaa374411c8b98b1f005dc087..94ede3e26e7ca2010979ba99bdd9bf1f60b03198 100644
+--- a/src/win/wsystem.c
++++ b/src/win/wsystem.c
+@@ -494,11 +494,16 @@ static int win_get_num_video_adapters(void)
+    return c;
+ }
+ 
++/* ICBM: adapter 0 = primary monitor. */
++#include "wsystem_icbm.inc"
++
+ static int win_find_nth_adapter_with_desktop(DISPLAY_DEVICE* pdd, int adapter)
+ {
+    int count = 0;
+    int c = 0;
+ 
++   adapter = icbm_translate_adapter(adapter); /* ICBM */
++
+    while (EnumDisplayDevices(NULL, count, pdd, 0)) {
+       if (pdd->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
+          if (c == adapter)
+diff --git a/src/win/wwindow.c b/src/win/wwindow.c
+index dde0dea1e79d333610636d8d84f1f5b886e56e03..0d5b063c82f6e9d474930e1b2235e22bbd969fa3 100644
+--- a/src/win/wwindow.c
++++ b/src/win/wwindow.c
+@@ -476,6 +476,10 @@ static LRESULT CALLBACK window_callback(HWND hWnd, UINT message,
+    if (i == system->displays._size)
+       return DefWindowProc(hWnd,message,wParam,lParam);
+ 
++#ifdef ALLEGRO_CFG_D3D /* ICBM */
++   _al_d3d_icbm_window_message(d, message); /* ICBM: HDR follows display changes and window moves */
++#endif /* ICBM */
++
+    if (message == _al_win_msg_suicide) {
+       break_window_message_pump(win_display, hWnd);
+       if (_al_win_unregister_touch_window)

@@ -1,0 +1,6 @@
+selftest/icbm_selftest.exe
+selftest/icbm_selftest.obj
+selftest/*.png
+selftest/allegro.log
+__pycache__/
+*.pyc
