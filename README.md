@@ -134,10 +134,24 @@ ICBM's projects (everything in `ICBMmber.sln`, plus e1p and LPNG; x64 only)
 look for Allegro only in `ICBM\allegro5\include` and `ICBM\allegro5\lib`, and
 for its third-party libraries (zlib, png, jpeg, webp, freetype, ogg, vorbis,
 theora, FLAC, opus, dumb, physfs) only in `ICBM\allegro5\deps\{include,lib}`.
-`ICBM\allegro5` is generated and git-ignored (`/allegro5/` in ICBM's `.gitignore`):
+`ICBM\allegro5` is generated and git-ignored (`/allegro5/` in ICBM's `.gitignore`).
+
+One step, in `XCode\allegro5_latest\allegro5` on branch `icbm-hdr`:
 
 ```
-python tools/stage_for_icbm.py ../allegro5_latest/allegro5 ../ICBM
+tools\configure_release.cmd <allegro5_latest\allegro5>    (once; makes build\ALLEGRO.slnx)
+```
+
+then build the project **`ICBM_STAGE`** in `build\ALLEGRO.slnx` (Visual Studio,
+RelWithDebInfo) or `bash tools/build.sh <allegro>/build ICBM_STAGE`. It builds
+the 13 libraries ICBM links, then runs `stage_for_icbm.py` into
+`../../ICBM/allegro5` (cache variable `ICBM_DIR`), headers, libs and deps from
+the same build. It refuses to stage from any branch but `ICBM_BRANCH`
+(`icbm-hdr`). `tools/icbm_stage.cmake` adds the target through
+`CMAKE_PROJECT_INCLUDE`; Allegro's CMake files are not changed. By hand:
+
+```
+python tools/stage_for_icbm.py ../allegro5_latest/allegro5 ../ICBM --require-branch icbm-hdr
 python tools/set_icbm_allegro_paths.py ../ICBM      # only if the paths were changed
 ```
 

@@ -2,7 +2,7 @@
 """Copy a built Allegro into ICBM's own folder.
 
     python stage_for_icbm.py <allegro source dir> <ICBM dir> [--config RelWithDebInfo]
-                             [--deps <deps dir>]
+                             [--deps <deps dir>] [--require-branch icbm-hdr]
 
 Creates (replacing any previous copy):
     <ICBM>/allegro5/include/allegro5/...  merged header tree: core headers, the
@@ -55,9 +55,19 @@ def main():
         i = args.index('--config')
         config = args[i + 1]
         del args[i:i + 2]
+    branch = None
+    if '--require-branch' in args:
+        i = args.index('--require-branch')
+        branch = args[i + 1]
+        del args[i:i + 2]
     if len(args) != 2:
         sys.exit(__doc__)
     src, icbm = (os.path.abspath(a) for a in args)
+    if branch:
+        cur = subprocess.run(['git', '-C', src, 'rev-parse', '--abbrev-ref', 'HEAD'],
+                             capture_output=True, text=True).stdout.strip()
+        if cur != branch:
+            sys.exit('%s is on branch %s, not %s: not staged into ICBM' % (src, cur or '?', branch))
     build = os.path.join(src, 'build')
     libdir = os.path.join(build, 'lib', config)
     if not os.path.isfile(os.path.join(libdir, 'allegro-static.lib')):
