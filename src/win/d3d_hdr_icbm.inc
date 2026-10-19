@@ -336,6 +336,46 @@ static void icbm_hdr_prepare_d3d(void)
    ALLEGRO_INFO("HDR: using Direct3D 9Ex\n");
 }
 
+/* A display made again after all displays were destroyed gets a new
+ * IDirect3D9(Ex) object. The adapters an IDirect3D9 object knows are those of
+ * its creation: after a remote desktop reconnect the session has a new remote
+ * display adapter, the old device stays lost for good (D3DERR_DEVICELOST, no
+ * Reset helps) and a new device on the old object cannot be created either.
+ * Called before icbm_hdr_prepare_d3d, which may still switch the new object to
+ * 9Ex; a process already on 9Ex stays on it.
+ */
+static bool icbm_d3d_had_display = false;
+
+static void icbm_d3d_refresh_object(void)
+{
+   ALLEGRO_SYSTEM *system = al_get_system_driver();
+   LPDIRECT3D9 fresh = NULL;
+
+   if (!_al_d3d || !icbm_d3d_had_display || system->displays._size > 0)
+      return;
+
+   if (icbm_d3d9ex) {
+      ICBM_DIRECT3D_CREATE9EX create_ex = (ICBM_DIRECT3D_CREATE9EX)GetProcAddress(_al_d3d_module, "Direct3DCreate9Ex");
+      IDirect3D9Ex *ex = NULL;
+      if (create_ex && create_ex(D3D_SDK_VERSION, &ex) == D3D_OK)
+         fresh = ex;
+   }
+   else {
+      DIRECT3DCREATE9PROC create = (DIRECT3DCREATE9PROC)GetProcAddress(_al_d3d_module, "Direct3DCreate9");
+      if (create)
+         fresh = create(D3D9b_SDK_VERSION);
+   }
+
+   if (!fresh) {
+      ALLEGRO_WARN("Direct3D object not made again, the old one stays\n");
+      return;
+   }
+
+   _al_d3d->Release();
+   _al_d3d = fresh;
+   ALLEGRO_INFO("Direct3D object made again: %u adapters\n", _al_d3d->GetAdapterCount());
+}
+
 
 /* ---- D3D9 render targets, suspend / resume ----------------------------- */
 

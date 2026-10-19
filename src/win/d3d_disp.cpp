@@ -1937,6 +1937,7 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
    ALLEGRO_DISPLAY_WIN *win_display;
    int *s;
 
+   icbm_d3d_refresh_object(); /* ICBM */
    icbm_hdr_prepare_d3d(); /* ICBM */
    al_lock_mutex(present_mutex);
    display = d3d_create_display_locked(w, h);
@@ -1945,6 +1946,7 @@ static ALLEGRO_DISPLAY *d3d_create_display(int w, int h)
 
    if (!display)
       return NULL;
+   icbm_d3d_had_display = true; /* ICBM */
 
    icbm_hdr_display_created((ALLEGRO_DISPLAY_D3D *)display); /* ICBM */
    ASSERT(display->vt);
