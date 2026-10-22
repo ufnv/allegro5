@@ -721,6 +721,52 @@ static void test_indexed_range(void)
       _al_icbm_get_indexed_vertex_count());
 }
 
+/* topic 17: after a draw on OpenGL the user attribute arrays are disabled too,
+ * so a later shader that has no such attribute cannot leave one enabled on a
+ * stale buffer (the NVIDIA driver read past it). */
+static void test_gl_user_attr_off(void)
+{
+   printf("[user attribute arrays after a draw]\n");
+   static const char *vs =
+      "attribute vec4 al_pos;\n"
+      "attribute vec4 al_user_attr_0;\n"
+      "uniform mat4 al_projview_matrix;\n"
+      "varying vec4 col;\n"
+      "void main() { col = al_user_attr_0; gl_Position = al_projview_matrix * al_pos; }\n";
+   static const char *ps =
+      "#ifdef GL_ES\nprecision mediump float;\n#endif\n"
+      "varying vec4 col;\n"
+      "void main() { gl_FragColor = col; }\n";
+   ALLEGRO_SHADER *sh = al_create_shader(ALLEGRO_SHADER_GLSL);
+   bool ok = sh && al_attach_shader_source(sh, ALLEGRO_VERTEX_SHADER, vs) &&
+      al_attach_shader_source(sh, ALLEGRO_PIXEL_SHADER, ps) && al_build_shader(sh);
+   CHECK(ok, "shader with al_user_attr_0 builds%s%s", ok ? "" : ": ", ok ? "" : (sh ? al_get_shader_log(sh) : "no shader"));
+   if (!ok) { if (sh) al_destroy_shader(sh); return; }
+
+   struct V { float x, y; float c[4]; } v[3] = { {10, 10, {1, 0, 0, 1}}, {40, 10, {1, 0, 0, 1}}, {10, 40, {1, 0, 0, 1}} };
+   ALLEGRO_VERTEX_ELEMENT el[] = {
+      {ALLEGRO_PRIM_POSITION, ALLEGRO_PRIM_FLOAT_2, offsetof(V, x)},
+      {ALLEGRO_PRIM_USER_ATTR, ALLEGRO_PRIM_FLOAT_4, offsetof(V, c)},
+      {0, 0, 0}
+   };
+   ALLEGRO_VERTEX_DECL *decl = al_create_vertex_decl(el, sizeof(V));
+   al_set_target_backbuffer(al_get_current_display());
+   al_use_shader(sh);
+   typedef GLint (APIENTRY *GetAttribLocation)(GLuint, const char *);
+   typedef void (APIENTRY *GetVertexAttribiv)(GLuint, GLenum, GLint *);
+   GetAttribLocation get_loc = (GetAttribLocation)al_get_opengl_proc_address("glGetAttribLocation");
+   GetVertexAttribiv get_attr = (GetVertexAttribiv)al_get_opengl_proc_address("glGetVertexAttribiv");
+   GLint loc = get_loc ? get_loc(al_get_opengl_program_object(sh), "al_user_attr_0") : -1;
+   al_draw_prim(v, decl, NULL, 0, 3, ALLEGRO_PRIM_TRIANGLE_LIST);
+   GLint enabled = 1;
+   if (loc >= 0 && get_attr)
+      get_attr(loc, 0x8622 /* GL_VERTEX_ATTRIB_ARRAY_ENABLED */, &enabled);
+   al_use_shader(NULL);
+   CHECK(loc >= 0 && !enabled, "al_user_attr_0 (location %d) disabled after the draw", loc);
+   al_destroy_vertex_decl(decl);
+   al_destroy_shader(sh);
+}
+
 /* ----------------------------------------------------------------- main */
 
 /* topic 16: al_destroy_display of a WGL display returns only after its window
@@ -777,6 +823,8 @@ static void run_display_tests(int api_flag, const char *api, const char *ttf)
    test_shader(is_opengl);
    test_std_z();
    test_indexed_range();
+   if (is_opengl)
+      test_gl_user_attr_off();
    test_idle_cpu();
    al_destroy_display(d);
 }

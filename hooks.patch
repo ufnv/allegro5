@@ -593,10 +593,27 @@ index 4e75b3eda57f14dd56f2002bb2b9e9809ddb6d74..b7e58bf742fe3b34d71a46c6119fda57
     /* Did the operation complete successfully within bounds? */
  
 diff --git a/src/opengl/ogl_draw.c b/src/opengl/ogl_draw.c
-index 1b4223871c990617beeb84eb1d3f776908ac6374..c11c41b371f97f30316749a655ef5ef07af53b93 100644
+index 1b4223871c990617beeb84eb1d3f776908ac6374..eeeb800541ecdd9ecc4c407d7406a50bb585109a 100644
 --- a/src/opengl/ogl_draw.c
 +++ b/src/opengl/ogl_draw.c
-@@ -764,8 +764,13 @@ bool _al_opengl_set_blender(ALLEGRO_DISPLAY *ogl_disp)
+@@ -38,6 +38,8 @@ ALLEGRO_DEBUG_CHANNEL("opengl")
+ #endif
+ #endif
+ 
++#include "ogl_draw_icbm.inc" /* ICBM */
++
+ static void convert_storage(ALLEGRO_PRIM_STORAGE storage, GLenum* type, int* ncoord, bool* normalized)
+ {
+    switch(storage) {
+@@ -402,6 +404,7 @@ static void revert_state(ALLEGRO_DISPLAY *display, ALLEGRO_BITMAP* texture)
+          glDisableVertexAttribArray(display->ogl_extras->varlocs.color_loc);
+       if (display->ogl_extras->varlocs.texcoord_loc >= 0)
+          glDisableVertexAttribArray(display->ogl_extras->varlocs.texcoord_loc);
++      icbm_disable_user_attr_arrays(display); /* ICBM */
+ #endif
+    }
+    else {
+@@ -764,8 +767,13 @@ bool _al_opengl_set_blender(ALLEGRO_DISPLAY *ogl_disp)
        GL_ONE, GL_ONE
  #endif
     };
