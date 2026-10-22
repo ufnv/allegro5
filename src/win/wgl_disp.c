@@ -44,6 +44,8 @@ ALLEGRO_DEBUG_CHANNEL("display")
 
 static ALLEGRO_DISPLAY_INTERFACE vt;
 
+#include "wgl_disp_icbm.inc" /* ICBM */
+
 /* Forward declarations: */
 static void display_thread_proc(void *arg);
 static void destroy_display_internals(ALLEGRO_DISPLAY_WGL *wgl_disp);
@@ -1080,10 +1082,14 @@ static void destroy_display_internals(ALLEGRO_DISPLAY_WGL *wgl_disp)
 
    _al_ogl_unmanage_extensions(disp);
 
+   HANDLE icbm_thread = icbm_wgl_open_window_thread(win_disp); /* ICBM */
+
    PostMessage(win_disp->window, _al_win_msg_suicide, (WPARAM)win_disp, 0);
 
    while (!win_disp->thread_ended)
       al_rest(0.001);
+
+   icbm_wgl_wait_window_thread(icbm_thread); /* ICBM */
 
    if (wgl_disp->glrc) {
       wglDeleteContext(wgl_disp->glrc);
