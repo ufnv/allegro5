@@ -1456,8 +1456,8 @@ static void *d3d_display_thread_proc(void *arg)
       else {
          refresh_rate = d3d_get_default_refresh_rate(win_display->adapter);
       }
-      d3d_display->device_name = (TCHAR *)al_malloc(sizeof(TCHAR)*32);
-      strcpy((char*)d3d_display->device_name, (char*)info->dd.DeviceName);
+      d3d_display->device_name = (TCHAR *)al_malloc(sizeof(info->dd.DeviceName));
+      memcpy(d3d_display->device_name, info->dd.DeviceName, sizeof(info->dd.DeviceName)); /* ICBM: was strcpy on the WCHAR name: copied "\" only, unterminated (ChangeDisplaySettingsEx read past it) */
       ALLEGRO_DEBUG("going to call _al_win_create_faux_fullscreen_window\n");
 
       info->display = al_display;
