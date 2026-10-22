@@ -693,7 +693,7 @@ index 6645d9f4486870d2b9565b8c70cf943a4e985d00..f2c494ce1c524b1928593018483d24e4
           if (err != D3D_OK) {
              ALLEGRO_ERROR("d3d_create_textures: Unable to create video texture (no render-to-texture).\n");
 diff --git a/src/win/d3d_disp.cpp b/src/win/d3d_disp.cpp
-index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..7557d921c5486298890413ec438e27b9aad5e101 100644
+index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..16a806d3d5464eec0adbfdd75abeadc4be837fce 100644
 --- a/src/win/d3d_disp.cpp
 +++ b/src/win/d3d_disp.cpp
 @@ -66,6 +66,9 @@ static const char* _al_d3d_module_name = "d3d9.dll";
@@ -748,6 +748,17 @@ index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..7557d921c5486298890413ec438e27b9
  
     _al_d3d_refresh_texture_memory(al_display);
  
+@@ -1446,8 +1456,8 @@ static void *d3d_display_thread_proc(void *arg)
+       else {
+          refresh_rate = d3d_get_default_refresh_rate(win_display->adapter);
+       }
+-      d3d_display->device_name = (TCHAR *)al_malloc(sizeof(TCHAR)*32);
+-      strcpy((char*)d3d_display->device_name, (char*)info->dd.DeviceName);
++      d3d_display->device_name = (TCHAR *)al_malloc(sizeof(info->dd.DeviceName));
++      memcpy(d3d_display->device_name, info->dd.DeviceName, sizeof(info->dd.DeviceName)); /* ICBM: was strcpy on the WCHAR name: copied "\" only, unterminated (ChangeDisplaySettingsEx read past it) */
+       ALLEGRO_DEBUG("going to call _al_win_create_faux_fullscreen_window\n");
+ 
+       info->display = al_display;
 @@ -1524,19 +1534,15 @@ static void *d3d_display_thread_proc(void *arg)
     SetEvent(params->AckEvent);
  
