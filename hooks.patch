@@ -898,6 +898,35 @@ index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..16a806d3d5464eec0adbfdd75abeadc4
     if (res != D3D_OK) {
        ALLEGRO_WARN("CreateIndexBuffer failed: %ld.\n", res);
        return false;
+diff --git a/src/win/wgl_disp.c b/src/win/wgl_disp.c
+index 837712e9e13bce834cbf93e6d2a07f1d2478962d..553b9ccc40983b8b91e246d3ab9bc631c1af2a7f 100644
+--- a/src/win/wgl_disp.c
++++ b/src/win/wgl_disp.c
+@@ -44,6 +44,8 @@ ALLEGRO_DEBUG_CHANNEL("display")
+ 
+ static ALLEGRO_DISPLAY_INTERFACE vt;
+ 
++#include "wgl_disp_icbm.inc" /* ICBM */
++
+ /* Forward declarations: */
+ static void display_thread_proc(void *arg);
+ static void destroy_display_internals(ALLEGRO_DISPLAY_WGL *wgl_disp);
+@@ -1080,11 +1082,15 @@ static void destroy_display_internals(ALLEGRO_DISPLAY_WGL *wgl_disp)
+ 
+    _al_ogl_unmanage_extensions(disp);
+ 
++   HANDLE icbm_thread = icbm_wgl_open_window_thread(win_disp); /* ICBM */
++
+    PostMessage(win_disp->window, _al_win_msg_suicide, (WPARAM)win_disp, 0);
+ 
+    while (!win_disp->thread_ended)
+       al_rest(0.001);
+ 
++   icbm_wgl_wait_window_thread(icbm_thread); /* ICBM */
++
+    if (wgl_disp->glrc) {
+       wglDeleteContext(wgl_disp->glrc);
+       wgl_disp->glrc = NULL;
 diff --git a/src/win/wkeyboard.c b/src/win/wkeyboard.c
 index b1bff956bc80aa35d6fb615af7f9cd23c79056ab..4dcda51ff312c2b4ef83da1fc8ccb4a3e9381ffc 100644
 --- a/src/win/wkeyboard.c

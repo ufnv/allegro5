@@ -78,6 +78,7 @@ code, so they can use its `static` helpers and need no CMake changes.
 | 13 | Direct3D indexed draws: the index range (`DrawIndexedPrimitiveUP`'s lowest and highest vertex). `al_draw_indexed_prim_range(..., num_vertices)`: the caller gives it (vertices 0 .. num_vertices - 1), no scan; a per-thread hint set around `al_draw_indexed_prim` (`_al_icbm_set/get_indexed_vertex_count`), ignored by OpenGL. Otherwise found four indices at a time with SSE2 (`icbm_index_range`); upstream's loop branched on every index, 3.5% of ICBM's main thread with its big vertex batches. Same result | `graph/Vertex.cpp` (`DrawVertexBatch`: the range call), every `al_draw_indexed_prim` (the scan) | `src/win/d3d_disp_icbm.inc`, `src/primitives_icbm.inc` | `src/win/d3d_disp.cpp`, `src/primitives.c`, `aintern_primitives.h`, `allegro_primitives.h` |
 | 14 | Direct3D object made again: a display created after all displays were destroyed gets a new IDirect3D9(Ex) (9Ex if the process is on it), because an IDirect3D9 knows only the adapters of its creation; after a remote desktop reconnect the old device stays lost for good (D3DERR_DEVICELOST) and no device can be made on the old object | `win/EVENTS.CPP` (lost-device watchdog, `ChangeDisplay` in `ICBM/ScreenCfg.cpp`) | `src/win/d3d_hdr_icbm.inc` (`icbm_d3d_refresh_object`) | `src/win/d3d_disp.cpp` |
 | 15 | Faux-fullscreen device name copied as WCHAR (upstream bug since the switch to UNICODE: `strcpy` on the `DISPLAY_DEVICE` name copied one byte and left it unterminated, so `ChangeDisplaySettingsEx` at display destruction read past the 64-byte buffer and restored a garbage device; found by Polaris Sector's ASan build) | every D3D display (destruction) | - | `src/win/d3d_disp.cpp` |
+| 16 | WGL display destruction waits for the window thread to end (its handle), not only for `thread_ended`: the thread sets the flag before its DLL_THREAD_DETACH notifications, and the NVIDIA driver's `wglDeleteContext` during the window thread's detach deadlocked, both spinning (ICBM and ICBM_MOD hung at exit in `al_uninstall_system` under OpenGL, intermittently) | every OpenGL display (destruction: exit, `ChangeDisplay` in `ICBM/ScreenCfg.cpp`) | `src/win/wgl_disp_icbm.inc` | `src/win/wgl_disp.c` |
 
 Conflict hints: topic 4 (`ttf.c`) is the usual one. Take upstream's new code,
 then turn every 2 px border literal into `BORDER_SIZE` (`+ 2` → `+ BORDER_SIZE`,
@@ -237,6 +238,9 @@ The display checks then run twice, on a **Direct3D** display and on an
 - the AUTO shader platform (HLSL on D3D, GLSL on GL), building and using it
 - `ALLEGRO_PRIMITIVE_STD_Z` reaching the depth test
 - idle CPU use
+
+Then 20 OpenGL displays made and destroyed (topic 16): each window thread
+must have ended when `al_destroy_display` returns.
 
 Last, an HDR Direct3D display (topic 11; it switches the process to Direct3D
 9Ex, so it runs after the others). It repeats MIN/MAX, `_TS` buffers and

@@ -723,6 +723,39 @@ static void test_indexed_range(void)
 
 /* ----------------------------------------------------------------- main */
 
+/* topic 16: al_destroy_display of a WGL display returns only after its window
+ * thread has ended (with the NVIDIA driver, wglDeleteContext during the
+ * thread's DLL detach deadlocked at exit). Displays made and destroyed again,
+ * each time the window thread's handle opened before the destroy. */
+static void test_gl_destroy_waits(void)
+{
+   const int rounds = 20;
+   int ended = 0, made = 0;
+   double worst = 0;
+   printf("\n===== OpenGL display destroy =====\n");
+   for (int i = 0; i < rounds; i++) {
+      al_set_new_display_flags(ALLEGRO_OPENGL | ALLEGRO_WINDOWED);
+      ALLEGRO_DISPLAY *d = al_create_display(160, 100);
+      if (!d) continue;
+      made++;
+      al_clear_to_color(al_map_rgb(i * 10, 0, 0));
+      al_flip_display();
+      DWORD id = GetWindowThreadProcessId(al_get_win_window_handle(d), NULL);
+      HANDLE h = OpenThread(SYNCHRONIZE, FALSE, id);
+      double t0 = al_get_time();
+      al_destroy_display(d);
+      double t = al_get_time() - t0;
+      if (t > worst) worst = t;
+      if (h) {
+         if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) ended++;
+         CloseHandle(h);
+      }
+   }
+   CHECK(made == rounds, "%d of %d OpenGL displays made", made, rounds);
+   CHECK(ended == made, "window thread ended when al_destroy_display returned: %d of %d", ended, made);
+   CHECK(worst < 3.0, "slowest destroy %.3f s", worst);
+}
+
 static void run_display_tests(int api_flag, const char *api, const char *ttf)
 {
    bool is_opengl = api_flag == ALLEGRO_OPENGL;
@@ -769,6 +802,7 @@ int main(int argc, char **argv)
 
    run_display_tests(ALLEGRO_DIRECT3D, "Direct3D", argv[2]);
    run_display_tests(ALLEGRO_OPENGL, "OpenGL", argv[2]);
+   test_gl_destroy_waits();
    test_hdr(); /* last: it switches the process to Direct3D 9Ex */
 
    printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED", failures);
