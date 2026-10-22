@@ -38,6 +38,8 @@ ALLEGRO_DEBUG_CHANNEL("opengl")
 #endif
 #endif
 
+#include "ogl_draw_icbm.inc" /* ICBM */
+
 static void convert_storage(ALLEGRO_PRIM_STORAGE storage, GLenum* type, int* ncoord, bool* normalized)
 {
    switch(storage) {
@@ -402,6 +404,7 @@ static void revert_state(ALLEGRO_DISPLAY *display, ALLEGRO_BITMAP* texture)
          glDisableVertexAttribArray(display->ogl_extras->varlocs.color_loc);
       if (display->ogl_extras->varlocs.texcoord_loc >= 0)
          glDisableVertexAttribArray(display->ogl_extras->varlocs.texcoord_loc);
+      icbm_disable_user_attr_arrays(display); /* ICBM */
 #endif
    }
    else {
