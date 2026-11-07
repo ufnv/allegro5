@@ -681,7 +681,7 @@ index 8311db4c228f90c2b897a4aee2d7812036192184..63a4a7f68e4185352ff0cf487b8d7411
  #endif
        case ALLEGRO_SHADER_AUTO:
 diff --git a/src/win/d3d_bmp.cpp b/src/win/d3d_bmp.cpp
-index 6645d9f4486870d2b9565b8c70cf943a4e985d00..f2c494ce1c524b1928593018483d24e479978a2c 100644
+index 6645d9f4486870d2b9565b8c70cf943a4e985d00..bdce167f8c70c405b9464a5fd8285476a1c651fd 100644
 --- a/src/win/d3d_bmp.cpp
 +++ b/src/win/d3d_bmp.cpp
 @@ -374,13 +374,13 @@ static bool d3d_create_textures(ALLEGRO_DISPLAY_D3D *disp, int w, int h,
@@ -709,6 +709,15 @@ index 6645d9f4486870d2b9565b8c70cf943a4e985d00..f2c494ce1c524b1928593018483d24e4
              video_texture, NULL);
           if (err != D3D_OK) {
              ALLEGRO_ERROR("d3d_create_textures: Unable to create video texture (no render-to-texture).\n");
+@@ -559,6 +559,8 @@ static void d3d_backup_dirty_bitmap(ALLEGRO_BITMAP *bitmap)
+    ALLEGRO_DISPLAY *display = bitmap->_display;
+    ALLEGRO_DISPLAY_D3D *d3d_display = (ALLEGRO_DISPLAY_D3D *)display;
+ 
++   if (!bitmap->dirty) return; /* ICBM: nothing to back up, so no mutex (al_backup_dirty_bitmaps calls this for every bitmap of the display at each flip) */
++
+    if (d3d_display->device_lost)
+       return;
+ 
 diff --git a/src/win/d3d_disp.cpp b/src/win/d3d_disp.cpp
 index 78a45cb2ecd9a91f87980b21f07f3e5ae1cdc244..16a806d3d5464eec0adbfdd75abeadc4be837fce 100644
 --- a/src/win/d3d_disp.cpp

@@ -1,6 +1,8 @@
 // Runtime self-test for the ICBM Allegro patches (Windows: Direct3D and OpenGL).
 // Usage: icbm_selftest <dir with plain.png, interlaced.png> <ttf font>
+#define ALLEGRO_UNSTABLE /* (aintern_bitmap.h: the dirty flag, topic 18) */
 #include <allegro5/allegro.h>
+#include <allegro5/internal/aintern_bitmap.h>
 #include <allegro5/allegro_image.h>
 #include <allegro5/allegro_font.h>
 #include <allegro5/allegro_ttf.h>
@@ -721,6 +723,61 @@ static void test_indexed_range(void)
       _al_icbm_get_indexed_vertex_count());
 }
 
+/* topic 18: the flip's backup of dirty bitmaps (Direct3D) returns early for a
+ * bitmap that is not dirty; a dirty preserved bitmap is still read back and
+ * cleared, and the clean ones stay clean. */
+static void test_d3d_backup_skip(void)
+{
+   printf("[backup of dirty bitmaps at the flip]\n");
+   ALLEGRO_DISPLAY *d = al_get_current_display();
+   int old_flags = al_get_new_bitmap_flags();
+   const int N = 300;
+   ALLEGRO_BITMAP *clean[N];
+
+   al_set_new_bitmap_flags(ALLEGRO_VIDEO_BITMAP);
+   ALLEGRO_BITMAP *kept = al_create_bitmap(8, 8);
+   for (int i = 0; i < N; i++)
+      clean[i] = al_create_bitmap(8, 8);
+   al_set_new_bitmap_flags(ALLEGRO_VIDEO_BITMAP | ALLEGRO_NO_PRESERVE_TEXTURE);
+   ALLEGRO_BITMAP *scratch = al_create_bitmap(8, 8);
+   al_set_new_bitmap_flags(old_flags);
+
+   al_set_target_backbuffer(d);
+   al_flip_display(); /* the new preserved bitmaps start dirty: backed up here */
+
+   int dirty_after_first = 0;
+   for (int i = 0; i < N; i++)
+      dirty_after_first += clean[i]->dirty ? 1 : 0;
+   CHECK(!kept->dirty && dirty_after_first == 0, "new preserved bitmaps backed up at the first flip (%d of %d still dirty)",
+      dirty_after_first + (kept->dirty ? 1 : 0), N + 1);
+
+   al_set_target_bitmap(kept);
+   al_clear_to_color(al_map_rgb(255, 0, 0));
+   al_set_target_bitmap(scratch);
+   al_clear_to_color(al_map_rgb(0, 255, 0));
+   al_set_target_backbuffer(d);
+   CHECK(kept->dirty && scratch->dirty, "drawn-into bitmaps marked dirty (preserved %d, not preserved %d)", kept->dirty, scratch->dirty);
+
+   double t0 = al_get_time();
+   al_flip_display();
+   double t1 = al_get_time();
+
+   int dirty_clean = 0;
+   for (int i = 0; i < N; i++)
+      dirty_clean += clean[i]->dirty ? 1 : 0;
+   CHECK(!kept->dirty && !scratch->dirty && dirty_clean == 0, "after the flip: preserved %d, not preserved %d, clean ones dirty %d (flip %.2f ms)",
+      kept->dirty, scratch->dirty, dirty_clean, (t1 - t0) * 1000.0);
+
+   unsigned char r, g, b;
+   al_unmap_rgb(al_get_pixel(kept, 4, 4), &r, &g, &b);
+   CHECK(r > 200 && g < 50 && b < 50, "the preserved bitmap keeps its pixels (%d,%d,%d)", r, g, b);
+
+   for (int i = 0; i < N; i++)
+      al_destroy_bitmap(clean[i]);
+   al_destroy_bitmap(kept);
+   al_destroy_bitmap(scratch);
+}
+
 /* topic 17: after a draw on OpenGL the user attribute arrays are disabled too,
  * so a later shader that has no such attribute cannot leave one enabled on a
  * stale buffer (the NVIDIA driver read past it). */
@@ -825,6 +882,8 @@ static void run_display_tests(int api_flag, const char *api, const char *ttf)
    test_indexed_range();
    if (is_opengl)
       test_gl_user_attr_off();
+   else
+      test_d3d_backup_skip();
    test_idle_cpu();
    al_destroy_display(d);
 }
