@@ -559,6 +559,8 @@ static void d3d_backup_dirty_bitmap(ALLEGRO_BITMAP *bitmap)
    ALLEGRO_DISPLAY *display = bitmap->_display;
    ALLEGRO_DISPLAY_D3D *d3d_display = (ALLEGRO_DISPLAY_D3D *)display;
 
+   if (!bitmap->dirty) return; /* ICBM: nothing to back up, so no mutex (al_backup_dirty_bitmaps calls this for every bitmap of the display at each flip) */
+
    if (d3d_display->device_lost)
       return;
 
