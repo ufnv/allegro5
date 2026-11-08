@@ -200,7 +200,7 @@ static bool hlsl_attach_shader_source(ALLEGRO_SHADER *shader,
 {
    bool add_technique;
    ALLEGRO_USTR *full_source;
-   LPD3DXBUFFER errors;
+   LPD3DXBUFFER errors = NULL; /* ICBM: set only when D3DX has a message */
    const char *vertex_source, *pixel_source, *technique_source;
    ALLEGRO_SHADER_HLSL_S *hlsl_shader = (ALLEGRO_SHADER_HLSL_S *)shader;
    ALLEGRO_DISPLAY *display = al_get_current_display();
@@ -306,7 +306,9 @@ static bool hlsl_attach_shader_source(ALLEGRO_SHADER *shader,
 
    if (ok != D3D_OK) {
       hlsl_shader->hlsl_shader = NULL;
-      char *msg = (char *)errors->GetBufferPointer();
+      /* ICBM: no error buffer when D3DX cannot load its compiler (d3dcompiler_NN.dll missing or 32-bit: 0x800700C1) */
+      const char *msg = errors ? (const char *)errors->GetBufferPointer() : "D3DXCreateEffect failed without a message (D3DX could not load its compiler)"; /* ICBM */
+      ALLEGRO_ERROR("D3DXCreateEffect HRESULT 0x%08X\n", (unsigned)ok); /* ICBM */
       if (shader->log) {
          al_ustr_truncate(shader->log, 0);
          al_ustr_append_cstr(shader->log, msg);
@@ -314,6 +316,7 @@ static bool hlsl_attach_shader_source(ALLEGRO_SHADER *shader,
          shader->log = al_ustr_new(msg);
       }
       ALLEGRO_ERROR("Error: %s\n", msg);
+      if (errors) errors->Release(); /* ICBM */
       return false;
    }
 
