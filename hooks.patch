@@ -593,7 +593,7 @@ index 4e75b3eda57f14dd56f2002bb2b9e9809ddb6d74..b7e58bf742fe3b34d71a46c6119fda57
     /* Did the operation complete successfully within bounds? */
  
 diff --git a/src/opengl/ogl_draw.c b/src/opengl/ogl_draw.c
-index 1b4223871c990617beeb84eb1d3f776908ac6374..eeeb800541ecdd9ecc4c407d7406a50bb585109a 100644
+index 1b4223871c990617beeb84eb1d3f776908ac6374..9c8bcd294c97a06c9156c068a4693c13fe0b87af 100644
 --- a/src/opengl/ogl_draw.c
 +++ b/src/opengl/ogl_draw.c
 @@ -38,6 +38,8 @@ ALLEGRO_DEBUG_CHANNEL("opengl")
@@ -629,6 +629,35 @@ index 1b4223871c990617beeb84eb1d3f776908ac6374..eeeb800541ecdd9ecc4c407d7406a50b
     };
  
     (void)ogl_disp;
+@@ -1017,6 +1025,10 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
+    GLuint current_texture;
+    ALLEGRO_OGL_EXTRAS *o = disp->ogl_extras;
+    (void)o; /* not used in all ports */
++#if !defined(ALLEGRO_CFG_OPENGLES) && !defined(ALLEGRO_MACOSX)
++   /* ICBM: a legacy context without VAOs (GL 2.1, e.g. Wine on macOS) uses client arrays */
++   bool use_vao = (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) && glGenVertexArrays && glBindVertexArray;
++#endif
+ 
+    if (!disp->vertex_cache)
+       return;
+@@ -1059,7 +1071,7 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
+ #if defined(ALLEGRO_MACOSX)
+    if ((disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) && (disp->flags & ALLEGRO_OPENGL_3_0)) {
+ #else
+-   if (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) {
++   if (use_vao) { /* ICBM */
+ #endif
+       int stride = sizeof(ALLEGRO_OGL_BITMAP_VERTEX);
+       int bytes = disp->num_cache_vertices * stride;
+@@ -1130,7 +1142,7 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
+ #endif
+ 
+ #if !defined ALLEGRO_CFG_OPENGLES && !defined ALLEGRO_MACOSX
+-   if (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) {
++   if (use_vao) { /* ICBM */
+       if (o->varlocs.pos_loc >= 0)
+          glDisableVertexAttribArray(o->varlocs.pos_loc);
+       if (o->varlocs.texcoord_loc >= 0)
 diff --git a/src/primitives.c b/src/primitives.c
 index 81f87e29708ce8e8be209021584eab0d2b4ede8d..7137de9e06b21e6302ce85f785e255301027e5d1 100644
 --- a/src/primitives.c
