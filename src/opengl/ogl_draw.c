@@ -1025,6 +1025,10 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
    GLuint current_texture;
    ALLEGRO_OGL_EXTRAS *o = disp->ogl_extras;
    (void)o; /* not used in all ports */
+#if !defined(ALLEGRO_CFG_OPENGLES) && !defined(ALLEGRO_MACOSX)
+   /* ICBM: a legacy context without VAOs (GL 2.1, e.g. Wine on macOS) uses client arrays */
+   bool use_vao = (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) && glGenVertexArrays && glBindVertexArray;
+#endif
 
    if (!disp->vertex_cache)
       return;
@@ -1067,7 +1071,7 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
 #if defined(ALLEGRO_MACOSX)
    if ((disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) && (disp->flags & ALLEGRO_OPENGL_3_0)) {
 #else
-   if (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) {
+   if (use_vao) { /* ICBM */
 #endif
       int stride = sizeof(ALLEGRO_OGL_BITMAP_VERTEX);
       int bytes = disp->num_cache_vertices * stride;
@@ -1138,7 +1142,7 @@ static void ogl_flush_vertex_cache(ALLEGRO_DISPLAY *disp)
 #endif
 
 #if !defined ALLEGRO_CFG_OPENGLES && !defined ALLEGRO_MACOSX
-   if (disp->flags & ALLEGRO_PROGRAMMABLE_PIPELINE) {
+   if (use_vao) { /* ICBM */
       if (o->varlocs.pos_loc >= 0)
          glDisableVertexAttribArray(o->varlocs.pos_loc);
       if (o->varlocs.texcoord_loc >= 0)
